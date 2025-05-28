@@ -34,6 +34,7 @@ impl Neuron {
             t_ref,
             t_rest: -1,
             p: prest,
+            d,
             pmin,
             prest,
         }
@@ -42,10 +43,10 @@ impl Neuron {
     pub fn check(&mut self) -> i32 {
         if self.p >= self.pth {
             self.p = PREF;
-            0
+            1
         } else if self.p < self.pmin {
             self.p = self.prest;
-            1
+            0
         } else {
             0
         }
@@ -60,7 +61,7 @@ impl Neuron {
         self.p = self.prest;
     }
 
-    pub fn update_parameters(&mut self, input: f64) {
+    pub fn update_potential(&mut self, input: f64) {
         if self.t_rest < 0 || self.p > self.pmin {
             self.p += input;
             if self.p > self.prest {
@@ -68,10 +69,59 @@ impl Neuron {
             }
         }
     }
+
+    pub fn simulate(&mut self, spike_train: &[f64], time_steps: usize) -> Vec<i32> {
+        let mut spikes = Vec::new();
+        
+        for t in 0..time_steps {
+
+            if self.t_rest < t as i32 {
+                self.update_potential(spike_train[t]);
+            }
+            
+            let spike = self.check();
+            if spike == 1 {
+                self.t_rest = t as i32 + self.t_ref;
+            }
+            
+            spikes.push(spike);
+        }
+        
+        spikes
+    }
 }
 
 impl Default for Neuron {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_neuron_creation() {
+        let neuron = Neuron::new();
+        assert_eq!(neuron.pth, PTH);
+        assert_eq!(neuron.t_ref, 4);
+        assert_eq!(neuron.p, PREST);
+    }
+
+    #[test]
+    fn test_neuron_initialization() {
+        let mut neuron = Neuron::new();
+        neuron.initial();
+        assert_eq!(neuron.t_rest, -1);
+        assert_eq!(neuron.p, PREST);
+    }
+
+    #[test]
+    fn test_spike_detection() {
+        let mut neuron = Neuron::new();
+        neuron.p = neuron.pth + 1.0;
+        assert_eq!(neuron.check(), 1);
+        assert_eq!(neuron.p, PREF);
     }
 }
