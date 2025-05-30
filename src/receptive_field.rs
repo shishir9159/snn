@@ -4,7 +4,7 @@ use image::GrayImage;
 pub fn apply_receptive_field(img: &GrayImage) -> Array2<f64> {
     let (height, width) = img.dimensions();
 
-    //  potential matrix
+    // potential matrix
     let mut pot = Array2::zeros((height as usize, width as usize));
     
     let filter = [
@@ -100,7 +100,7 @@ pub fn create_center_surround_filter(size: usize) -> Array2<f64> {
     filter
 }
 
-/// applies a custom filter
+// applies a custom filter
 pub fn apply_custom_filter(img: &GrayImage, filter: &Array2<f64>) -> Array2<f64> {
 
     let (height, width) = img.dimensions();
@@ -148,7 +148,7 @@ mod tests {
         let filter = create_center_surround_filter(5);
         assert_eq!(filter.dim(), (5, 5));
 
-        // Center should be positive
+        // center should be positive
         assert_eq!(filter[[2, 2]], 1.0);
     }
 
