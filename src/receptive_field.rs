@@ -22,7 +22,7 @@ pub fn apply_receptive_field(img: &GrayImage) -> Array2<f64> {
     for i in 0..height as usize {
         for j in 0..width as usize {
             let mut sum = 0.0;
-            
+
             for (m_idx, &m) in range.iter().enumerate() {
                 for (n_idx, &n) in range.iter().enumerate() {
                     let y = i as i32 + m;
@@ -43,6 +43,7 @@ pub fn apply_receptive_field(img: &GrayImage) -> Array2<f64> {
 }
 
 pub fn apply_receptive_field_to_array(input: &Array2<f64>) -> Array2<f64> {
+
     let (height, width) = input.dim();
     let mut pot = Array2::zeros((height, width));
     
@@ -81,6 +82,7 @@ pub fn apply_receptive_field_to_array(input: &Array2<f64>) -> Array2<f64> {
 }
 
 pub fn create_center_surround_filter(size: usize) -> Array2<f64> {
+
     let mut filter = Array2::zeros((size, size));
     let center = size / 2;
     
@@ -100,19 +102,22 @@ pub fn create_center_surround_filter(size: usize) -> Array2<f64> {
 
 /// applies a custom filter
 pub fn apply_custom_filter(img: &GrayImage, filter: &Array2<f64>) -> Array2<f64> {
+
     let (height, width) = img.dimensions();
     let (f_height, f_width) = filter.dim();
     let mut result = Array2::zeros((height as usize, width as usize));
     
-    let pad_h = f_height / 2;
     let pad_w = f_width / 2;
+    let pad_h = f_height / 2;
     
     for i in 0..height as usize {
         for j in 0..width as usize {
+
             let mut sum = 0.0;
             
             for fi in 0..f_height {
                 for fj in 0..f_width {
+
                     let y = i as i32 + fi as i32 - pad_h as i32;
                     let x = j as i32 + fj as i32 - pad_w as i32;
                     
@@ -130,13 +135,16 @@ pub fn apply_custom_filter(img: &GrayImage, filter: &Array2<f64>) -> Array2<f64>
     result
 }
 
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use ndarray::arr2;
 
     #[test]
     fn test_center_surround_filter() {
+        
         let filter = create_center_surround_filter(5);
         assert_eq!(filter.dim(), (5, 5));
 
