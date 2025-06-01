@@ -6,12 +6,12 @@ use std::f64;
 pub fn encode_stochastic(img: &GrayImage, time_steps: usize) -> Vec<Vec<f64>> {
 
     let mut train = Vec::new();
-    let (height, width) = img.dimensions();    
+    let (height, width) = img.dimensions();
+    
     let normalized = normalize_image(img);
     
     for y in 0..height {
         for x in 0..width {
-
             let intensity = normalized[[y as usize, x as usize]];
             let mut spike_train = Vec::new();
             
@@ -29,18 +29,18 @@ pub fn encode_stochastic(img: &GrayImage, time_steps: usize) -> Vec<Vec<f64>> {
 }
 
 pub fn encode_deterministic(pot: &Array2<f64>, time_steps: usize) -> Vec<Vec<f64>> {
-
     let mut train = Vec::new();
     let (rows, cols) = pot.dim();
     
     for i in 0..rows {
         for j in 0..cols {
 
-            let potential = pot[[i, j]];
             let mut spike_train = vec![0.0; time_steps];
-            let freq = interpolate(potential, -2.0, 5.0, 1.0, 10.0);
-
-            if freq > 0 {
+            let potential = pot[[i, j]];
+            
+            let freq = interpolate(potential, -2.0, 5.0, 1.0, 20.0);
+            
+            if freq > 0.0 {
                 let freq_step = (time_steps as f64 / freq).ceil() as usize;
                 let mut k = freq_step;
                 
@@ -58,10 +58,9 @@ pub fn encode_deterministic(pot: &Array2<f64>, time_steps: usize) -> Vec<Vec<f64
 }
 
 fn normalize_image(img: &GrayImage) -> Array2<f64> {
-
     let (height, width) = img.dimensions();
     let mut array = Array2::zeros((height as usize, width as usize));
-
+    
     for y in 0..height {
         for x in 0..width {
             let pixel = img.get_pixel(x, y)[0] as f64 / 255.0;
@@ -96,10 +95,11 @@ pub fn encode_image_deterministic(img: &DynamicImage, time_steps: usize) -> Vec<
     let (height, width) = gray_img.dimensions();
     let mut pot = Array2::zeros((height as usize, width as usize));
     
+    // potential map convertion
     for y in 0..height {
         for x in 0..width {
             let pixel = gray_img.get_pixel(x, y)[0] as f64 / 255.0;
-            pot[[y as usize, y as usize]] = pixel;
+            pot[[y as usize, x as usize]] = pixel;
         }
     }
     
@@ -108,6 +108,7 @@ pub fn encode_image_deterministic(img: &DynamicImage, time_steps: usize) -> Vec<
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use ndarray::arr2;
 
@@ -123,7 +124,7 @@ mod tests {
         let pot = arr2(&[[0.5, 0.3], [0.8, 0.1]]);
         let train = encode_deterministic(&pot, 10);
         
-        assert_eq!(train.len(), 4);
+        assert_eq!(train.len(), 4); // 4 pixels
         assert_eq!(train[0].len(), 10);
     }
 }

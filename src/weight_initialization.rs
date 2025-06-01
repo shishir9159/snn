@@ -7,17 +7,19 @@ pub fn load_learned_weights(image_paths: &[&str]) -> Result<Vec<Vec<f64>>, Box<d
     let mut weights = Vec::new();
     
     for path in image_paths {
+
         let img = image::open(path)?;
         let gray_img = img.to_luma8();
         let (height, width) = gray_img.dimensions();
         
         let mut weight_vector = Vec::new();
+
         for y in 0..height {
             for x in 0..width {
 
                 let pixel_value = gray_img.get_pixel(x, y)[0];
                 let weight = if pixel_value == 0 {
-                    -0.9
+                    -0.7
                 } else {
                     1.0
                 };
@@ -32,6 +34,7 @@ pub fn load_learned_weights(image_paths: &[&str]) -> Result<Vec<Vec<f64>>, Box<d
     Ok(weights)
 }
 
+// weight loading containing numbered files
 pub fn load_learned_weights_from_dir(dir_path: &str, image_names: &[&str]) -> Result<Vec<Vec<f64>>, Box<dyn std::error::Error>> {
     
     let mut weights = Vec::new();
@@ -43,12 +46,13 @@ pub fn load_learned_weights_from_dir(dir_path: &str, image_names: &[&str]) -> Re
         let (height, width) = gray_img.dimensions();
         
         let mut weight_vector = Vec::new();
+
         for y in 0..height {
             for x in 0..width {
     
                 let pixel_value = gray_img.get_pixel(x, y)[0];
                 let weight = if pixel_value == 0 {
-                    -0.9
+                    -0.7
                 } else {
                     1.0
                 };
@@ -68,16 +72,17 @@ pub fn initialize_random_weights(num_neurons: usize, num_inputs: usize, w_min: f
     use rand::Rng;
     let mut rng = rand::thread_rng();
     let mut weights = Array2::zeros((num_neurons, num_inputs));
-    
+
     for i in 0..num_neurons {
         for j in 0..num_inputs {
             weights[[i, j]] = rng.gen_range(w_min..=w_max);
         }
     }
-    
+
     weights
 }
 
+/// Initializes weights using Xavier/Glorot initialization
 pub fn initialize_xavier_weights(num_neurons: usize, num_inputs: usize) -> Array2<f64> {
 
     use rand::Rng;
@@ -101,9 +106,9 @@ pub fn initialize_he_weights(num_neurons: usize, num_inputs: usize) -> Array2<f6
     use rand::Rng;
 
     let mut rng = rand::thread_rng();
+    let std_dev = (2.0 / num_inputs as f64).sqrt();
+
     let mut weights = Array2::zeros((num_neurons, num_inputs));
-    
-    let std_dev = (2.4 / num_inputs as f64).sqrt();
     
     for i in 0..num_neurons {
         for j in 0..num_inputs {
@@ -134,16 +139,17 @@ pub fn save_weights(weights: &Array2<f64>, file_path: &str) -> Result<(), Box<dy
 }
 
 pub fn load_weights(file_path: &str) -> Result<Array2<f64>, Box<dyn std::error::Error>> {
+
     let content = fs::read_to_string(file_path)?;
     let lines: Vec<&str> = content.lines().collect();
     
     if lines.is_empty() {
-        return Err("Empty file".into());
+        return Err("empty file".into());
     }
     
     let first_line: Vec<&str> = lines[0].split_whitespace().collect();
     if first_line.len() != 2 {
-        return Err("Invalid format".into());
+        return Err("invalid format".into());
     }
     
     let rows: usize = first_line[0].parse()?;
@@ -152,7 +158,8 @@ pub fn load_weights(file_path: &str) -> Result<Array2<f64>, Box<dyn std::error::
     let mut weights = Array2::zeros((rows, cols));
     
     for (i, line) in lines.iter().enumerate().skip(1) {
-        if i - 1 >= rows {
+
+        if i > rows {
             break;
         }
         
@@ -177,6 +184,7 @@ pub fn create_weight_matrix(
     w_min: f64,
     w_max: f64
 ) -> Array2<f64> {
+
     let mut weights = initialize_random_weights(num_neurons, num_inputs, w_min, w_max);
     
     for (i, learned_weight) in learned_weights.iter().enumerate() {
@@ -186,5 +194,31 @@ pub fn create_weight_matrix(
             }
         }
     }
+    
     weights
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::arr2;
+
+    #[test]
+    fn test_random_weight_initialization() {
+        let weights = initialize_random_weights(3, 4, -0.5, 0.5);
+        assert_eq!(weights.dim(), (3, 4));
+    }
+
+    #[test]
+    fn test_xavier_initialization() {
+        let weights = initialize_xavier_weights(3, 4);
+        assert_eq!(weights.dim(), (3, 4));
+    }
+
+    #[test]
+    fn test_weight_matrix_creation() {
+        let learned = vec![vec![1.0, 2.0, 3.0, 4.0]];
+        let weights = create_weight_matrix(&learned, 3, 4, -0.5, 0.5);
+        assert_eq!(weights.dim(), (3, 4));
+    }
 }
