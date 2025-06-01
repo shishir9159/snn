@@ -8,15 +8,15 @@ use image::{DynamicImage, GrayImage};
 #[derive(Debug, Clone)]
 pub struct ClassificationParams {
     pub pth: f64,
-    pub t_back: i32,
+    pub epochs: usize,
     pub time_steps: usize,
+    pub t_back: i32,
+    pub t_fore: i32,
+    pub num_images: usize,
     pub num_input_neurons: usize,
     pub num_output_neurons: usize,
-    pub t_fore: i32,
-    pub w_min: f64,
     pub w_max: f64,
-    pub epochs: usize,
-    pub num_images: usize,
+    pub w_min: f64,
 }
 
 impl Default for ClassificationParams {
@@ -26,28 +26,30 @@ impl Default for ClassificationParams {
             t_back: -20,
             t_fore: 20,
             pth: 150.0,
+            num_input_neurons: 784, // 28x28 for MNIST
+            num_output_neurons: 8,
             epochs: 1,
             num_images: 6,
             w_max: 0.5,
             w_min: -0.5,
-            num_input_neurons: 784,
-            num_output_neurons: 8,
         }
     }
 }
 
+// winner-takes-it-all
 pub struct ClassificationNetwork {
     params: ClassificationParams,
-    // param_count
     output_neurons: Vec<Neuron>,
     synapse_weights: Array2<f64>,
     learned_weights: Vec<Vec<f64>>,
 }
 
 impl ClassificationNetwork {
+    // classification network
     pub fn new(params: ClassificationParams, learned_weights: Vec<Vec<f64>>) -> Self {
 
         let mut output_neurons = Vec::new();
+        
         for _ in 0..params.num_output_neurons {
             output_neurons.push(Neuron::new());
         }
@@ -67,7 +69,7 @@ impl ClassificationNetwork {
             learned_weights,
         }
     }
-
+    
     pub fn classify_image(&mut self, img: &DynamicImage) -> Vec<f64> {
 
         for neuron in &mut self.output_neurons {
@@ -75,10 +77,11 @@ impl ClassificationNetwork {
         }
         
         let gray_img = img.to_luma8();
-        let _pot = apply_receptive_field(&gray_img);
+        let _pot = apply_receptive_field(&gray_img);        
         let spike_train = encode_image_stochastic(img, self.params.time_steps);
         
         let mut flat_spike_train = Vec::new();
+
         for t in 0..self.params.time_steps {
             for pixel_spikes in &spike_train {
                 if t < pixel_spikes.len() {
@@ -133,7 +136,7 @@ impl ClassificationNetwork {
                     }
                 }
             }
-
+            
             for (j, neuron) in self.output_neurons.iter_mut().enumerate() {
                 let spike = neuron.check();
                 if spike == 1 {
@@ -169,7 +172,7 @@ impl ClassificationNetwork {
     pub fn get_weights(&self) -> &Array2<f64> {
         &self.synapse_weights
     }
-
+    
     pub fn update_weights(&mut self, new_weights: Array2<f64>) {
         self.synapse_weights = new_weights;
     }
@@ -199,3 +202,27 @@ pub fn create_test_images() -> Vec<DynamicImage> {
     
     images
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::weight_initialization::initialize_random_weights;
+
+    #[test]
+    fn test_classification_params() {
+        let params = ClassificationParams::default();
+        assert_eq!(params.time_steps, 200);
+        assert_eq!(params.num_output_neurons, 8);
+    }
+
+    #[test]
+    fn test_network_creation() {
+        let params = ClassificationParams::default();
+        let learned_weights = vec![vec![1.0; 784]];
+        let network = ClassificationNetwork::new(params, learned_weights);
+        assert_eq!(network.output_neurons.len(), 8);
+    }
+}
+
+
+
