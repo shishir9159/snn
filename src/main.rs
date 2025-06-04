@@ -1,82 +1,34 @@
-mod classification;
-mod neuron;
-mod receptive_field;
-mod spike_train;
-mod weight_initialization;
+use snn::{encode, Neuron, Params, Rng, SpikeTrain};
 
-use classification::{ClassificationNetwork, ClassificationParams, load_images_from_dir};
-use weight_initialization::load_learned_weights_from_dir;
+fn main() {
+    let p = Params::default();
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-
-    let params = ClassificationParams {
-        time_steps: 200,
-        t_back: -20,
-        t_fore: 20,
-        pth: 150.0,
-        num_input_neurons: 784,
-        num_output_neurons: 8,
-        epochs: 1,
-        num_images: 6,
-        w_max: 0.5,
-        w_min: -0.5,
-    };
-
-    let image_names = ["1.png", "2.png", "3.png", "4.png", "5.png", "6.png"];
-    let learned_weights = match load_learned_weights_from_dir("training_split", &image_names) {
-
-        Ok(weights) => {
-            println!("Loaded {} learned weight vectors", weights.len());
-            weights
-        }
-
-        Err(_) => {
-            println!("Could not load learned weights, using random initialization");
-            vec![]
-        }
-    };
-    
-    let mut network = ClassificationNetwork::new(params, learned_weights);
-    
-    let test_images = match load_images_from_dir("test_split", &image_names) {
-
-        Ok(images) => {
-            println!("loaded {} test images", images.len());
-            images
-        }
-
-        Err(_) => {
-            println!("could not load test images, using example test images");
-            classification::create_test_images()
-        }
-    };
-
-    let results = network.classify_images(&test_images);
-    for (i, result) in results.iter().enumerate() {
-
-        println!("image {}: {:?}", i+1, result);
-    
-        
-        if let Some(max_idx) = result.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()) {
-            println!("-> predicted class: {}", max_idx.0);
+    // a vertical bar through a blank 28x28 image
+    let mut img = [0u8; 28 * 28];
+    for y in 4..24 {
+        for x in 13..16 {
+            img[y * 28 + x] = 255;
         }
     }
-    
-    let mut neuron = neuron::Neuron::new();
-    let spike_train = vec![1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0];
-    let spikes = neuron.simulate(&spike_train, spike_train.len());
-    
-    println!("input spike train: {:?}", spike_train);
-    println!("output spikes: {:?}", spikes);
-    println!("total spikes: {}", spikes.iter().sum::<i32>());
-    
-    use image::GrayImage;
-    use receptive_field::apply_receptive_field;
-    
-    let test_img = GrayImage::new(28, 28);
-    let pot = apply_receptive_field(&test_img);
-    println!("trying receptive field to a 28x28 image");
-    println!("potential map dimensions: {:?}", pot.dim());
 
-    Ok(())
+    let mut pot = Vec::new();
+    encode::receptive_field(&img, 28, 28, &mut pot);
+    let mut train = SpikeTrain::new();
+    train.encode(&pot, p.time_steps, &p.encode, &mut Rng::new(0));
+    println!(
+        "input spikes: {}, peak simultaneous: {}",
+        train.total(),
+        train.max_simultaneous()
+    );
+
+    // one neuron with uniform weights on every input
+    let mut n = Neuron::new(&p.lif);
+    let threshold = train.max_simultaneous() as f32 / p.threshold_div;
+    let mut fired = 0;
+    for t in 1..=p.time_steps {
+        let input = 0.2 * train.active(t).len() as f32;
+        n.integrate(t as i32, input, &p.lif);
+        fired += n.fire(t as i32, threshold, &p.lif) as u32;
+    }
+    println!("threshold {threshold:.1}, output spikes: {fired}");
 }
