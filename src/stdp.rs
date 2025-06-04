@@ -1,0 +1,162 @@
+//! Spike-timing-dependent plasticity with soft weight bounds.
+
+use crate::encode::SpikeTrain;
+use crate::params::StdpParams;
+
+/// Weight change for a pre spike `dt = t_pre - t_post` steps from the post spike:
+/// potentiation when the pre spike leads (or coincides), depression when it follows.
+pub fn kernel(dt: i32, p: &StdpParams) -> f32 {
+    if dt > 0 {
+        -p.a_plus * (-(dt as f32) / p.tau_plus).exp()
+    } else {
+        p.a_minus * (dt as f32 / p.tau_minus).exp()
+    }
+}
+
+/// Moves `w` by `dw` scaled with its distance to the bound it heads for,
+/// so weights approach but never cross [w_min, w_max].
+pub fn bounded(w: f32, dw: f32, p: &StdpParams) -> f32 {
+    if dw > 0.0 {
+        w + p.sigma * dw * (p.w_max - w)
+    } else {
+        w + p.sigma * dw * (w - p.w_min)
+    }
+}
+
+/// STDP rule with the kernel tabulated over the window.
+#[derive(Debug, Clone)]
+pub struct Stdp {
+    p: StdpParams,
+    table: Vec<f32>,
+}
+
+impl Stdp {
+    pub fn new(p: &StdpParams) -> Self {
+        let back = p.t_back as i32;
+        let table = (-back..=p.t_fore as i32).map(|dt| kernel(dt, p)).collect();
+        Self { p: *p, table }
+    }
+
+    pub fn params(&self) -> &StdpParams {
+        &self.p
+    }
+
+    /// Applies every pre spike within the window around a post spike at step `t`
+    /// to one neuron's weight row.
+    pub fn post_spike(&self, row: &mut [f32], train: &SpikeTrain, t: usize) {
+        let lo = t.saturating_sub(self.p.t_back as usize).max(1);
+        let hi = (t + self.p.t_fore as usize).min(train.steps());
+        for s in lo..=hi {
+            let dw = self.table[s + self.p.t_back as usize - t];
+            for &i in train.active(s) {
+                let w = &mut row[i as usize];
+                *w = bounded(*w, dw, &self.p);
+            }
+        }
+    }
+
+    /// Depresses synapses from inputs that stayed silent for the whole image.
+    pub fn depress_silent(&self, row: &mut [f32], train: &SpikeTrain, amount: f32) {
+        for (i, w) in row.iter_mut().enumerate() {
+            if train.times(i).is_empty() {
+                *w = (*w - amount).max(self.p.w_min);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::params::{Coding, EncodeParams};
+    use crate::rng::Rng;
+
+    fn p() -> StdpParams {
+        StdpParams::default()
+    }
+
+    #[test]
+    fn kernel_sign_and_decay() {
+        let p = p();
+        assert_eq!(kernel(0, &p), p.a_minus);
+        assert!(kernel(-1, &p) > kernel(-10, &p));
+        assert!(kernel(-10, &p) > 0.0);
+        assert!(kernel(1, &p) < 0.0);
+        assert!(kernel(1, &p) < kernel(10, &p));
+    }
+
+    #[test]
+    fn soft_bounds_hold() {
+        let p = p();
+        let mut w = 0.0;
+        for _ in 0..1000 {
+            w = bounded(w, 1.0, &p);
+        }
+        assert!(w <= p.w_max && w > p.w_max - 0.01);
+        for _ in 0..1000 {
+            w = bounded(w, -1.0, &p);
+        }
+        assert!(w >= p.w_min && w < p.w_min + 0.01);
+    }
+
+    #[test]
+    fn depression_lowers_any_weight() {
+        // the reference bound (w - |w_min|) raised weights below |w_min|
+        let p = p();
+        for w in [-1.0, 0.0, 0.5, 1.9] {
+            assert!(bounded(w, -0.5, &p) < w);
+            assert!(bounded(w, 0.5, &p) > w);
+        }
+    }
+
+    fn train(pot: &[f32]) -> SpikeTrain {
+        let ep = EncodeParams {
+            coding: Coding::Regular,
+            ..EncodeParams::default()
+        };
+        let mut tr = SpikeTrain::new();
+        tr.encode(pot, 200, &ep, &mut Rng::new(0));
+        tr
+    }
+
+    #[test]
+    fn post_spike_potentiates_leading_and_depresses_following() {
+        // input 0 spikes at 95 and 190, input 1 is silent
+        let tr = train(&[0.01, 0.0]);
+        assert_eq!(tr.times(0), &[95, 190]);
+        let stdp = Stdp::new(&p());
+
+        let mut row = [0.5, 0.5];
+        stdp.post_spike(&mut row, &tr, 100);
+        assert!(row[0] > 0.5);
+        assert_eq!(row[1], 0.5);
+
+        let mut row = [0.5, 0.5];
+        stdp.post_spike(&mut row, &tr, 90);
+        assert!(row[0] < 0.5);
+
+        let mut row = [0.5, 0.5];
+        stdp.post_spike(&mut row, &tr, 140);
+        assert_eq!(row[0], 0.5, "no pre spike within the window");
+    }
+
+    #[test]
+    fn window_clips_at_train_edges() {
+        let tr = train(&[10.0]);
+        let stdp = Stdp::new(&p());
+        let mut row = [0.0];
+        stdp.post_spike(&mut row, &tr, 1);
+        stdp.post_spike(&mut row, &tr, 200);
+        assert!(row[0] != 0.0);
+    }
+
+    #[test]
+    fn silent_inputs_are_depressed_to_floor() {
+        let tr = train(&[10.0, 0.0]);
+        let stdp = Stdp::new(&p());
+        let mut row = [0.5, -1.18];
+        stdp.depress_silent(&mut row, &tr, 0.06);
+        assert_eq!(row[0], 0.5);
+        assert_eq!(row[1], p().w_min);
+    }
+}
