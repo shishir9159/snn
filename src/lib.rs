@@ -8,6 +8,7 @@ pub mod params;
 pub mod rng;
 pub mod stdp;
 pub mod train;
+pub mod viz;
 pub mod weights;
 
 pub use dataset::Dataset;
