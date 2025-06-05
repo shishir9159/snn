@@ -7,6 +7,7 @@ pub mod neuron;
 pub mod params;
 pub mod rng;
 pub mod stdp;
+pub mod train;
 pub mod weights;
 
 pub use dataset::Dataset;

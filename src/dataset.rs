@@ -56,6 +56,20 @@ impl Dataset {
         }
     }
 
+    /// Reorders images randomly.
+    pub fn shuffle(&mut self, rng: &mut Rng) {
+        let mut order: Vec<usize> = (0..self.len()).collect();
+        rng.shuffle(&mut order);
+        let n = self.width * self.height;
+        let mut pixels = Vec::with_capacity(self.pixels.len());
+        for &i in &order {
+            pixels.extend_from_slice(self.image(i));
+        }
+        self.labels = order.iter().map(|&i| self.labels[i]).collect();
+        self.pixels = pixels;
+        debug_assert_eq!(self.pixels.len(), n * self.labels.len());
+    }
+
     /// Moves the last `n` images into a second set.
     pub fn split_off(&mut self, n: usize) -> Dataset {
         let at = self.len() - n.min(self.len());

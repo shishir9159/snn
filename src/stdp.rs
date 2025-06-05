@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn depression_lowers_any_weight() {
         // the reference bound (w - |w_min|) raised weights below |w_min|
-        let p = p();
+        let p = StdpParams { w_min: -1.2, ..p() };
         for w in [-1.0, 0.0, 0.5, 1.9] {
             assert!(bounded(w, -0.5, &p) < w);
             assert!(bounded(w, 0.5, &p) > w);
@@ -154,7 +154,7 @@ mod tests {
     fn silent_inputs_are_depressed_to_floor() {
         let tr = train(&[10.0, 0.0]);
         let stdp = Stdp::new(&p());
-        let mut row = [0.5, -1.18];
+        let mut row = [0.5, p().w_min + 0.01];
         stdp.depress_silent(&mut row, &tr, 0.06);
         assert_eq!(row[0], 0.5);
         assert_eq!(row[1], p().w_min);

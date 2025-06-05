@@ -52,7 +52,11 @@ pub struct Layer {
 impl Layer {
     pub fn new(n_in: usize, n_out: usize, p: &Params, rng: &mut Rng) -> Self {
         let (lo, hi) = p.w_init;
-        Self::with_weights(n_in, n_out, weights::random(n_in * n_out, lo, hi, rng), p)
+        let mut w = weights::random(n_in * n_out, lo, hi, rng);
+        for row in w.chunks_exact_mut(n_in) {
+            normalize(row, p.w_norm, p.stdp.w_max);
+        }
+        Self::with_weights(n_in, n_out, w, p)
     }
 
     pub fn with_weights(n_in: usize, n_out: usize, weights: Vec<f32>, p: &Params) -> Self {
@@ -148,10 +152,13 @@ impl Layer {
             if let Some(w) = winner {
                 let row = &mut self.weights[w * self.n_in..(w + 1) * self.n_in];
                 self.stdp.depress_silent(row, train, p.silent_penalty);
-                self.theta[w] += p.theta_plus;
+                normalize(row, p.w_norm, p.stdp.w_max);
             }
-            for th in &mut self.theta {
-                *th *= p.theta_decay;
+            // drive every neuron toward an equal share of wins
+            let share = 1.0 / self.n_out as f32;
+            for (j, th) in self.theta.iter_mut().enumerate() {
+                let won = (winner == Some(j)) as u8 as f32;
+                *th = (*th + p.theta_rate * (won - share)).max(-0.9);
             }
         }
 
@@ -177,6 +184,15 @@ impl Layer {
             }
         }
         best
+    }
+}
+
+/// Scales a row to L2 norm `norm`, capped at `w_max`.
+fn normalize(row: &mut [f32], norm: f32, w_max: f32) {
+    let len = row.iter().map(|w| w * w).sum::<f32>().sqrt();
+    if norm > 0.0 && len > 0.0 {
+        let k = norm / len;
+        row.iter_mut().for_each(|w| *w = (*w * k).min(w_max));
     }
 }
 

@@ -1,4 +1,5 @@
-//! Model parameters. Defaults follow the reference Python model unless noted.
+//! Model parameters. Defaults follow the reference Python model except where
+//! tuning on MNIST showed otherwise (noted inline).
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LifParams {
@@ -60,9 +61,12 @@ pub struct Params {
     pub threshold_div: f32,
     /// depression of the winner's synapses from inputs that never spiked
     pub silent_penalty: f32,
-    /// homeostasis: relative threshold raise per win, decayed every image
-    pub theta_plus: f32,
-    pub theta_decay: f32,
+    /// L2 norm every weight row is rescaled to after learning, so a broad template
+    /// can't outbid a specific one (0 disables)
+    pub w_norm: f32,
+    /// homeostasis rate: thresholds rise for neurons winning more than their
+    /// share of images and fall for the rest
+    pub theta_rate: f32,
     /// initial weights are uniform in this range
     pub w_init: (f32, f32),
 }
@@ -101,7 +105,8 @@ impl Default for StdpParams {
             t_back: 20,
             t_fore: 20,
             sigma: 0.1,
-            w_min: -1.2,
+            // reference: -1.2; negative weights made most images drive no neuron
+            w_min: 0.0,
             w_max: 2.0,
         }
     }
@@ -114,10 +119,11 @@ impl Default for Params {
             lif: LifParams::default(),
             encode: EncodeParams::default(),
             stdp: StdpParams::default(),
-            threshold_div: 3.0,
-            silent_penalty: 0.06,
-            theta_plus: 0.05,
-            theta_decay: 0.995,
+            // reference: 3, 0.06; no normalisation
+            threshold_div: 1.0,
+            silent_penalty: 0.02,
+            w_norm: 8.0,
+            theta_rate: 0.05,
             w_init: (0.0, 0.4),
         }
     }
