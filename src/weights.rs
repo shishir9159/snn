@@ -31,6 +31,26 @@ fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
+/// Saves weight rows as a grid of `side`² tiles, `lo` black and `hi` white.
+pub fn save_png(path: &Path, w: &[f32], side: usize, lo: f32, hi: f32) -> io::Result<()> {
+    let n = w.len() / (side * side);
+    let cols = ((n as f32).sqrt().ceil() as usize).max(1);
+    let rows = n.div_ceil(cols).max(1);
+    let (iw, ih) = (cols * (side + 1) - 1, rows * (side + 1) - 1);
+    let mut px = vec![0u8; iw * ih];
+    for (k, tile) in w.chunks_exact(side * side).enumerate() {
+        let (ox, oy) = ((k % cols) * (side + 1), (k / cols) * (side + 1));
+        for (i, &v) in tile.iter().enumerate() {
+            let g = ((v - lo) / (hi - lo)).clamp(0.0, 1.0) * 255.0;
+            px[(oy + i / side) * iw + ox + i % side] = g as u8;
+        }
+    }
+    image::GrayImage::from_raw(iw as u32, ih as u32, px)
+        .expect("buffer matches dimensions")
+        .save(path)
+        .map_err(io::Error::other)
+}
+
 pub fn parse(text: &str) -> io::Result<(usize, usize, Vec<f32>)> {
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let header = lines
@@ -91,6 +111,23 @@ mod tests {
         let loaded = load(&path);
         fs::remove_file(&path).ok();
         assert_eq!(loaded.unwrap(), (3, 5, w));
+    }
+
+    #[test]
+    fn png_tiles_weight_rows() {
+        let w: Vec<f32> = (0..5 * 4)
+            .map(|i| if i % 4 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        let path = std::env::temp_dir().join(format!("snn-weights-{}.png", std::process::id()));
+        save_png(&path, &w, 2, -1.0, 1.0).unwrap();
+        let img = image::open(&path).map(|i| i.to_luma8());
+        fs::remove_file(&path).ok();
+        // 5 tiles of 2x2 in a 3x2 grid with 1px gaps
+        let img = img.unwrap();
+        assert_eq!(img.dimensions(), (8, 5));
+        assert_eq!(img.get_pixel(0, 0)[0], 255);
+        assert_eq!(img.get_pixel(1, 0)[0], 0);
+        assert_eq!(img.get_pixel(3, 0)[0], 255);
     }
 
     #[test]
