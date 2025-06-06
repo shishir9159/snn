@@ -1,8 +1,11 @@
 use snn::dataset::{self, Dataset};
 use snn::train::{Control, EpochResult, ImageResult, Labels, Monitor, Trainer};
+use snn::viz::{frame, server, Hub, Tap};
 use snn::{weights, Layer, Params, Rng};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Instant;
 
 const USAGE: &str = "\
@@ -12,25 +15,35 @@ usage: snn [options]
                      (default: synthetic digits)
   --train N          training images
   --test N           test images
-  --epochs N         passes over the training set (default 1)
+  --epochs N         passes over the training set (default 1 headless, 10 live)
   --outputs N        output neurons (default 40)
   --seed N           random seed (default 1)
   --load FILE        start from saved weights
   --save FILE        save weights after training
-  --weights-png FILE save weight maps as an image";
+  --weights-png FILE save weight maps as an image
+  --headless         train without the live view
+  --port N           live view port (default 7878)
+  --speed X          multiple of real time, 1 ms per step; or max (default 1)";
 
-#[derive(Debug)]
+/// One simulated step per millisecond.
+const REAL_TIME: f32 = 1000.0;
+
+#[derive(Debug, Clone)]
 struct Args {
     mnist: Option<PathBuf>,
     png: Option<PathBuf>,
     train: Option<usize>,
     test: Option<usize>,
-    epochs: usize,
+    epochs: Option<usize>,
     outputs: usize,
     seed: u64,
     load: Option<PathBuf>,
     save: Option<PathBuf>,
     weights_png: Option<PathBuf>,
+    headless: bool,
+    port: u16,
+    /// steps per second, 0 for unthrottled
+    speed: u32,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -39,34 +52,46 @@ fn parse_args() -> Result<Args, String> {
         png: None,
         train: None,
         test: None,
-        epochs: 1,
+        epochs: None,
         outputs: 40,
         seed: 1,
         load: None,
         save: None,
         weights_png: None,
+        headless: false,
+        port: 7878,
+        speed: REAL_TIME as u32,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
-        if flag == "-h" || flag == "--help" {
-            return Err(String::new());
+        match flag.as_str() {
+            "-h" | "--help" => return Err(String::new()),
+            "--headless" => {
+                a.headless = true;
+                continue;
+            }
+            _ => {}
         }
         let val = it.next().ok_or(format!("{flag} needs a value"))?;
-        let num = |v: &str| {
-            v.parse::<usize>()
-                .map_err(|_| format!("{flag}: not a number: {v}"))
-        };
+        let bad = || format!("{flag}: bad value {val}");
+        let num = |v: &str| v.parse::<usize>().map_err(|_| bad());
         match flag.as_str() {
             "--mnist" => a.mnist = Some(val.into()),
             "--png" => a.png = Some(val.into()),
             "--train" => a.train = Some(num(&val)?),
             "--test" => a.test = Some(num(&val)?),
-            "--epochs" => a.epochs = num(&val)?,
+            "--epochs" => a.epochs = Some(num(&val)?),
             "--outputs" => a.outputs = num(&val)?.max(1),
             "--seed" => a.seed = num(&val)? as u64,
             "--load" => a.load = Some(val.into()),
             "--save" => a.save = Some(val.into()),
             "--weights-png" => a.weights_png = Some(val.into()),
+            "--port" => a.port = val.parse().map_err(|_| bad())?,
+            "--speed" if val == "max" => a.speed = 0,
+            "--speed" => {
+                let x: f32 = val.parse().map_err(|_| bad())?;
+                a.speed = (x * REAL_TIME).max(1.0) as u32;
+            }
             _ => return Err(format!("unknown option {flag}")),
         }
     }
@@ -91,13 +116,13 @@ fn load_data(a: &Args) -> Result<(Dataset, Dataset), String> {
     };
     train.truncate(a.train.unwrap_or(usize::MAX));
     test.truncate(a.test.unwrap_or(usize::MAX));
-    if train.is_empty() && a.epochs > 0 {
+    if train.is_empty() {
         return Err("no training images".into());
     }
     Ok((train, test))
 }
 
-/// Prints progress lines while training headless.
+/// Prints progress lines while training.
 struct Progress {
     every: usize,
     t0: Instant,
@@ -121,6 +146,7 @@ impl Monitor for Progress {
     }
 
     fn epoch_end(&mut self, e: &EpochResult) {
+        self.t0 = Instant::now();
         let test = e
             .test_accuracy
             .map_or("-".into(), |a| format!("{:.1}%", a * 100.0));
@@ -132,6 +158,49 @@ impl Monitor for Progress {
             e.images_per_sec
         );
     }
+}
+
+fn build_trainer(
+    a: &Args,
+    params: &Params,
+    train: &Dataset,
+    classes: usize,
+) -> Result<Trainer, String> {
+    let n_in = train.width * train.height;
+    let Some(path) = &a.load else {
+        return Ok(Trainer::new(
+            params.clone(),
+            n_in,
+            a.outputs,
+            classes,
+            a.seed,
+        ));
+    };
+    let (rows, cols, w) = weights::load(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if cols != n_in {
+        return Err(format!(
+            "{}: {cols} inputs, images have {n_in}",
+            path.display()
+        ));
+    }
+    let layer = Layer::with_weights(n_in, rows, w, params);
+    let mut t = Trainer::with_layer(params.clone(), layer, classes, Rng::new(a.seed));
+    t.assign_labels(train);
+    Ok(t)
+}
+
+fn save_outputs(a: &Args, t: &Trainer, side: usize) -> Result<(), String> {
+    let l = &t.layer;
+    if let Some(path) = &a.save {
+        weights::save(path, l.n_out, l.n_in, &l.weights).map_err(|e| e.to_string())?;
+        println!("weights saved to {}", path.display());
+    }
+    if let Some(path) = &a.weights_png {
+        let (lo, hi) = (t.params.stdp.w_min, t.params.stdp.w_max);
+        weights::save_png(path, &l.weights, side, lo, hi).map_err(|e| e.to_string())?;
+        println!("weight maps saved to {}", path.display());
+    }
+    Ok(())
 }
 
 fn run(a: Args) -> Result<(), String> {
@@ -146,51 +215,60 @@ fn run(a: Args) -> Result<(), String> {
         train.classes
     );
     let params = Params::default();
-    let n_in = train.width * train.height;
     let classes = train.classes.max(test.classes);
-    let mut trainer = match &a.load {
-        Some(path) => {
-            let (rows, cols, w) =
-                weights::load(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            if cols != n_in {
-                return Err(format!(
-                    "{}: {cols} inputs, images have {n_in}",
-                    path.display()
-                ));
-            }
-            let layer = Layer::with_weights(n_in, rows, w, &params);
-            let mut t = Trainer::with_layer(params.clone(), layer, classes, Rng::new(a.seed));
-            t.assign_labels(&train);
-            t
-        }
-        None => Trainer::new(params.clone(), n_in, a.outputs, classes, a.seed),
-    };
-
-    let ctl = Control::new(0);
-    let mut progress = Progress {
+    let mut trainer = build_trainer(&a, &params, &train, classes)?;
+    let epochs = a.epochs.unwrap_or(if a.headless { 1 } else { 10 });
+    let progress = Progress {
         every: (train.len() / 10).max(1),
         t0: Instant::now(),
     };
-    let test_set = (!test.is_empty()).then_some(&test);
-    if a.epochs == 0 {
-        if let Some(t) = test_set {
-            let acc = trainer.evaluate(t, 0, &mut (), &ctl);
-            println!("test {:.1}%", acc * 100.0);
-        }
-    }
-    trainer.fit(&train, test_set, a.epochs, &mut progress, &ctl);
 
-    let l = &trainer.layer;
-    if let Some(path) = &a.save {
-        weights::save(path, l.n_out, l.n_in, &l.weights).map_err(|e| e.to_string())?;
-        println!("weights saved to {}", path.display());
+    if a.headless {
+        let ctl = Control::new(0);
+        let test_set = (!test.is_empty()).then_some(&test);
+        if epochs == 0 {
+            if let Some(t) = test_set {
+                println!("test {:.1}%", trainer.evaluate(t, 0, &mut (), &ctl) * 100.0);
+            }
+        }
+        trainer.fit(&train, test_set, epochs, &mut { progress }, &ctl);
+        return save_outputs(&a, &trainer, train.width);
     }
-    if let Some(path) = &a.weights_png {
-        let (lo, hi) = (params.stdp.w_min, params.stdp.w_max);
-        weights::save_png(path, &l.weights, train.width, lo, hi).map_err(|e| e.to_string())?;
-        println!("weight maps saved to {}", path.display());
-    }
-    Ok(())
+
+    let hub = Arc::new(Hub::new());
+    let ctl = Arc::new(Control::new(a.speed));
+    let mut b = frame::Buf::new();
+    let meta = frame::Meta {
+        dataset: &train.name,
+        width: train.width,
+        height: train.height,
+        n_out: trainer.layer.n_out,
+        classes,
+        n_train: train.len(),
+        n_test: test.len(),
+        epochs,
+        params: &params,
+    };
+    frame::meta(&mut b, &meta);
+    hub.set_meta(b.take());
+
+    let listener =
+        TcpListener::bind(("127.0.0.1", a.port)).map_err(|e| format!("port {}: {e}", a.port))?;
+    println!("live view: http://127.0.0.1:{}", a.port);
+
+    let (h, c) = (hub.clone(), ctl.clone());
+    let worker = std::thread::spawn(move || {
+        let tap = Tap::new(h.clone(), params.stdp.w_min, params.stdp.w_max);
+        let test_set = (!test.is_empty()).then_some(&test);
+        trainer.fit(&train, test_set, epochs, &mut (tap, progress), &c);
+        c.finish();
+        server::publish_state(&h, &c);
+        if let Err(e) = save_outputs(&a, &trainer, train.width) {
+            eprintln!("error: {e}");
+        }
+    });
+    server::serve(listener, hub, ctl);
+    worker.join().map_err(|_| "trainer panicked".to_string())
 }
 
 fn main() -> ExitCode {

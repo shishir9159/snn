@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SNN training</title>
+<style>
+  body { margin: 0; padding: 24px; background: #081a12; color: #eef2ee; font: 15px/1.5 system-ui, sans-serif; }
+  b { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<p id="status">connecting…</p>
+<script>
+const status = document.getElementById('status');
+const ws = new WebSocket(`ws://${location.host}/ws`);
+ws.binaryType = 'arraybuffer';
+ws.onclose = () => status.textContent = 'disconnected';
+ws.onmessage = (e) => {
+  const v = new DataView(e.data);
+  for (let at = 0; at < v.byteLength;) {
+    const kind = v.getUint8(at), len = v.getUint32(at + 1, true), p = at + 5;
+    if (kind === 8) {
+      const epoch = v.getUint16(p, true) + 1, index = v.getUint32(p + 2, true) + 1;
+      const total = v.getUint32(p + 6, true), acc = v.getFloat32(p + 11, true);
+      status.innerHTML = `epoch <b>${epoch}</b> · image <b>${index}/${total}</b> · running accuracy <b>${(acc * 100).toFixed(1)}%</b>`;
+    }
+    at = p + len;
+  }
+};
+</script>
+</body>
+</html>

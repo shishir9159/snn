@@ -57,6 +57,7 @@ pub struct Control {
     /// simulation steps per second, 0 for unthrottled
     speed: AtomicU32,
     stop: AtomicBool,
+    done: AtomicBool,
 }
 
 impl Control {
@@ -67,6 +68,7 @@ impl Control {
             wake: Condvar::new(),
             speed: AtomicU32::new(speed),
             stop: AtomicBool::new(false),
+            done: AtomicBool::new(false),
         }
     }
 
@@ -95,6 +97,15 @@ impl Control {
 
     pub fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
+    }
+
+    /// Marks training as finished.
+    pub fn finish(&self) {
+        self.done.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.done.load(Ordering::Relaxed)
     }
 
     /// Blocks while paused; returns how long it waited.
@@ -191,16 +202,41 @@ pub trait Monitor {
 
 impl Monitor for () {}
 
+impl<A: Monitor, B: Monitor> Monitor for (A, B) {
+    fn image_start(&mut self, info: &ImageInfo, pixels: &[u8], train: &SpikeTrain) {
+        self.0.image_start(info, pixels, train);
+        self.1.image_start(info, pixels, train);
+    }
+    fn step(&mut self, s: &Step) {
+        self.0.step(s);
+        self.1.step(s);
+    }
+    fn image_end(&mut self, r: &ImageResult, layer: &Layer, labels: &Labels) {
+        self.0.image_end(r, layer, labels);
+        self.1.image_end(r, layer, labels);
+    }
+    fn epoch_end(&mut self, e: &EpochResult) {
+        self.0.epoch_end(e);
+        self.1.epoch_end(e);
+    }
+}
+
 struct Hook<'a, M: Monitor> {
     mon: &'a mut M,
     pacer: &'a mut Pacer,
     ctl: &'a Control,
+    learn: bool,
 }
 
 impl<M: Monitor> Observer for Hook<'_, M> {
     fn step(&mut self, s: &Step) {
         self.mon.step(s);
-        self.pacer.tick(self.ctl);
+        // only training is paced; evaluation runs flat out
+        if self.learn {
+            self.pacer.tick(self.ctl);
+        } else {
+            self.ctl.wait_while_paused();
+        }
     }
 }
 
@@ -263,6 +299,7 @@ impl Trainer {
             mon,
             pacer: &mut self.pacer,
             ctl,
+            learn: info.learn,
         };
         let outcome = self.layer.present(&self.train, p, info.learn, &mut hook);
         let predicted = outcome.winner.and_then(|w| self.labels.of(w));
