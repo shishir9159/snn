@@ -1,7 +1,7 @@
 //! Broadcast of record packets from the trainer to any number of viewers.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 use tungstenite::Bytes;
@@ -16,6 +16,7 @@ struct Shared {
     ring: VecDeque<Bytes>,
     meta: Bytes,
     state: Bytes,
+    resume: Bytes,
 }
 
 #[derive(Default)]
@@ -23,7 +24,6 @@ pub struct Hub {
     shared: Mutex<Shared>,
     wake: Condvar,
     viewers: AtomicUsize,
-    snapshot_wanted: AtomicBool,
 }
 
 impl Hub {
@@ -56,14 +56,13 @@ impl Hub {
         self.publish(packet);
     }
 
-    /// True once after a viewer joined: the trainer should resend weights and history.
-    pub fn take_snapshot_request(&self) -> bool {
-        self.snapshot_wanted.swap(false, Ordering::Relaxed)
+    /// Sets the training snapshot a joining viewer gets, so it isn't blank while paused.
+    pub fn set_resume(&self, packet: Vec<u8>) {
+        self.shared.lock().unwrap().resume = packet.into();
     }
 
     pub fn join(&self) -> Viewer<'_> {
         self.viewers.fetch_add(1, Ordering::Relaxed);
-        self.snapshot_wanted.store(true, Ordering::Relaxed);
         let s = self.shared.lock().unwrap();
         Viewer {
             hub: self,
@@ -82,7 +81,7 @@ impl Viewer<'_> {
     /// Packets that bring a new viewer up to date.
     pub fn intro(&self) -> Vec<Bytes> {
         let s = self.hub.shared.lock().unwrap();
-        [&s.meta, &s.state]
+        [&s.meta, &s.state, &s.resume]
             .into_iter()
             .filter(|p| !p.is_empty())
             .cloned()
@@ -119,8 +118,6 @@ mod tests {
         hub.publish(vec![1]);
         let mut v = hub.join();
         assert_eq!(hub.viewers(), 1);
-        assert!(hub.take_snapshot_request());
-        assert!(!hub.take_snapshot_request());
         hub.publish(vec![2]);
         hub.publish(vec![3]);
         let got: Vec<Vec<u8>> = v.poll(Duration::ZERO).iter().map(|b| b.to_vec()).collect();
@@ -143,13 +140,15 @@ mod tests {
     }
 
     #[test]
-    fn intro_has_meta_then_state() {
+    fn intro_has_meta_state_and_resume() {
         let hub = Hub::new();
         hub.set_meta(vec![9]);
         hub.set_state(vec![7]);
         let v = hub.join();
         let intro: Vec<Vec<u8>> = v.intro().iter().map(|b| b.to_vec()).collect();
         assert_eq!(intro, vec![vec![9], vec![7]]);
+        hub.set_resume(vec![5]);
+        assert_eq!(v.intro().last().unwrap().to_vec(), vec![5]);
     }
 
     #[test]

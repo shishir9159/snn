@@ -2,7 +2,7 @@
 //! `kind: u8, len: u32, payload`; one WebSocket message carries several.
 
 use crate::params::Params;
-use crate::train::ImageInfo;
+use crate::train::{EpochResult, ImageInfo};
 
 pub const META: u8 = 1;
 pub const IMAGE: u8 = 2;
@@ -204,30 +204,38 @@ pub fn result(b: &mut Buf, r: &Result) {
     b.end();
 }
 
-/// Weights quantised to bytes over [lo, hi].
-pub fn weights(b: &mut Buf, rows: usize, cols: usize, w: &[f32], lo: f32, hi: f32) {
+pub struct Weights<'a> {
+    pub rows: usize,
+    pub cols: usize,
+    pub w: &'a [f32],
+    pub lo: f32,
+    pub hi: f32,
+    pub labels: &'a [Option<u8>],
+    pub theta: &'a [f32],
+}
+
+/// Weights quantised to bytes over [lo, hi], then each row's label and theta.
+pub fn weights(b: &mut Buf, x: &Weights) {
     b.begin(WEIGHTS);
-    b.u16(rows as u16);
-    b.u16(cols as u16);
-    let k = 255.0 / (hi - lo).max(f32::EPSILON);
-    for &v in w {
-        b.u8(((v - lo) * k).clamp(0.0, 255.0) as u8);
+    b.u16(x.rows as u16);
+    b.u16(x.cols as u16);
+    let k = 255.0 / (x.hi - x.lo).max(f32::EPSILON);
+    for &v in x.w {
+        b.u8(((v - x.lo) * k).clamp(0.0, 255.0) as u8);
     }
+    x.labels.iter().for_each(|l| b.u8(l.unwrap_or(255)));
+    x.theta.iter().for_each(|&t| b.f32(t));
     b.end();
 }
 
-pub fn epoch(
-    b: &mut Buf,
-    epoch: usize,
-    train_acc: f32,
-    test_acc: Option<f32>,
-    images_per_sec: f32,
-) {
+/// A finished epoch; `images` is the training images seen by then.
+pub fn epoch(b: &mut Buf, e: &EpochResult, images: u64) {
     b.begin(EPOCH);
-    b.u16(epoch as u16);
-    b.f32(train_acc);
-    b.f32(test_acc.unwrap_or(f32::NAN));
-    b.f32(images_per_sec);
+    b.u16(e.epoch as u16);
+    b.f32(e.train_accuracy);
+    b.f32(e.test_accuracy.unwrap_or(f32::NAN));
+    b.f32(e.images_per_sec);
+    b.f64(images as f64);
     b.end();
 }
 
@@ -295,13 +303,20 @@ mod tests {
     fn records_carry_their_length() {
         let mut b = Buf::new();
         state(&mut b, true, 1000, false);
-        epoch(&mut b, 2, 0.5, None, 100.0);
+        let e = EpochResult {
+            epoch: 2,
+            train_accuracy: 0.5,
+            test_accuracy: None,
+            images_per_sec: 100.0,
+        };
+        epoch(&mut b, &e, 7);
         let bytes = b.take();
         let r = records(&bytes);
         assert_eq!(r.len(), 2);
         assert_eq!(r[0], (STATE, &[1, 0xe8, 3, 0, 0, 0][..]));
         assert_eq!(r[1].0, EPOCH);
         assert!(f32::from_le_bytes(r[1].1[6..10].try_into().unwrap()).is_nan());
+        assert_eq!(f64::from_le_bytes(r[1].1[14..22].try_into().unwrap()), 7.0);
         assert!(b.is_empty());
     }
 
@@ -327,9 +342,21 @@ mod tests {
     #[test]
     fn weights_quantise_to_bytes() {
         let mut b = Buf::new();
-        weights(&mut b, 1, 3, &[0.0, 1.0, 5.0], 0.0, 2.0);
+        let x = Weights {
+            rows: 1,
+            cols: 3,
+            w: &[0.0, 1.0, 5.0],
+            lo: 0.0,
+            hi: 2.0,
+            labels: &[Some(4)],
+            theta: &[0.0],
+        };
+        weights(&mut b, &x);
         let bytes = b.take();
-        assert_eq!(records(&bytes)[0].1, &[1, 0, 3, 0, 0, 127, 255]);
+        assert_eq!(
+            records(&bytes)[0].1,
+            &[1, 0, 3, 0, 0, 127, 255, 4, 0, 0, 0, 0]
+        );
     }
 
     #[test]

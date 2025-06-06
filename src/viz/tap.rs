@@ -13,6 +13,8 @@ const FLUSH: Duration = Duration::from_millis(16);
 /// Fastest rate at which whole presentations are streamed step by step.
 const STREAM_GAP: Duration = Duration::from_millis(33);
 const WEIGHTS_GAP: Duration = Duration::from_millis(100);
+/// How often the snapshot for joining viewers is refreshed.
+const RESUME_GAP: Duration = Duration::from_millis(250);
 /// History points kept before halving the resolution.
 const HISTORY: usize = 2048;
 
@@ -26,6 +28,9 @@ pub struct Tap {
     last_flush: Instant,
     last_stream: Instant,
     last_weights: Instant,
+    last_resume: Instant,
+    /// latest encoded WEIGHTS record
+    weights_rec: Vec<u8>,
     seq: u32,
     sim_steps: u64,
     images: u64,
@@ -34,6 +39,8 @@ pub struct Tap {
     history: Vec<(u32, f32)>,
     history_every: u64,
     potentials: Vec<f32>,
+    /// finished epochs with the images seen by then, replayed to late viewers
+    epochs: Vec<(EpochResult, u64)>,
 }
 
 impl Tap {
@@ -48,6 +55,8 @@ impl Tap {
             last_flush: long_ago,
             last_stream: long_ago,
             last_weights: long_ago,
+            last_resume: long_ago,
+            weights_rec: Vec::new(),
             seq: 0,
             sim_steps: 0,
             images: 0,
@@ -56,6 +65,7 @@ impl Tap {
             history: Vec::new(),
             history_every: 1,
             potentials: Vec::new(),
+            epochs: Vec::new(),
         }
     }
 
@@ -73,17 +83,7 @@ impl Tap {
         if dt >= 0.5 {
             self.rate = (now, self.images, (self.images - self.rate.1) as f32 / dt);
         }
-        if let Some((info, acc)) = self.progress {
-            let p = frame::Progress {
-                epoch: info.epoch,
-                index: info.index,
-                total: info.total,
-                learn: info.learn,
-                running_accuracy: acc,
-                sim_steps: self.sim_steps,
-                images: self.images,
-                images_per_sec: self.rate.2,
-            };
+        if let Some(p) = self.progress_record() {
             frame::progress(&mut self.buf, &p);
         }
         let packet = self.buf.take();
@@ -91,6 +91,50 @@ impl Tap {
             self.hub.publish(packet);
         }
         self.last_flush = now;
+    }
+
+    fn progress_record(&self) -> Option<frame::Progress> {
+        self.progress.map(|(info, acc)| frame::Progress {
+            epoch: info.epoch,
+            index: info.index,
+            total: info.total,
+            learn: info.learn,
+            running_accuracy: acc,
+            sim_steps: self.sim_steps,
+            images: self.images,
+            images_per_sec: self.rate.2,
+        })
+    }
+
+    fn encode_weights(&mut self, layer: &Layer, labels: &Labels) {
+        let assigned: Vec<Option<u8>> = (0..layer.n_out).map(|j| labels.of(j)).collect();
+        let mut b = Buf::new();
+        let w = frame::Weights {
+            rows: layer.n_out,
+            cols: layer.n_in,
+            w: &layer.weights,
+            lo: self.w_range.0,
+            hi: self.w_range.1,
+            labels: &assigned,
+            theta: &layer.theta,
+        };
+        frame::weights(&mut b, &w);
+        self.weights_rec = b.take();
+    }
+
+    /// Caches what a viewer joining now needs: weights, history, epochs and progress.
+    fn refresh_resume(&mut self) {
+        let mut b = Buf::new();
+        b.raw(&self.weights_rec);
+        frame::history(&mut b, &self.history);
+        for (e, images) in &self.epochs {
+            frame::epoch(&mut b, e, *images);
+        }
+        if let Some(p) = self.progress_record() {
+            frame::progress(&mut b, &p);
+        }
+        self.hub.set_resume(b.take());
+        self.last_resume = Instant::now();
     }
 
     fn record_history(&mut self, acc: f32) {
@@ -145,11 +189,20 @@ impl Monitor for Tap {
             self.record_history(r.running_accuracy);
         }
         self.progress = Some((r.info, r.running_accuracy));
-        if self.hub.viewers() == 0 {
+        let viewers = self.hub.viewers() > 0;
+        let resume_due = self.last_resume.elapsed() >= RESUME_GAP;
+        let send_weights = viewers && self.last_weights.elapsed() >= WEIGHTS_GAP;
+        if send_weights || resume_due {
+            self.encode_weights(layer, labels);
+        }
+        if resume_due {
+            self.refresh_resume();
+        }
+        if !viewers {
             return;
         }
-        let assigned: Vec<Option<u8>> = (0..layer.n_out).map(|j| labels.of(j)).collect();
         if self.streaming {
+            let assigned: Vec<Option<u8>> = (0..layer.n_out).map(|j| labels.of(j)).collect();
             self.close_steps();
             let res = frame::Result {
                 seq: self.seq,
@@ -164,37 +217,21 @@ impl Monitor for Tap {
             };
             frame::result(&mut self.buf, &res);
         }
-        let snapshot = self.hub.take_snapshot_request();
-        if snapshot || self.last_weights.elapsed() >= WEIGHTS_GAP {
+        if send_weights {
             self.close_steps();
-            let (lo, hi) = self.w_range;
-            frame::weights(
-                &mut self.buf,
-                layer.n_out,
-                layer.n_in,
-                &layer.weights,
-                lo,
-                hi,
-            );
+            self.buf.raw(&self.weights_rec);
             self.last_weights = Instant::now();
         }
-        if snapshot {
-            frame::history(&mut self.buf, &self.history);
-        }
-        if self.streaming || snapshot || self.last_flush.elapsed() >= FLUSH {
+        if self.streaming || send_weights || self.last_flush.elapsed() >= FLUSH {
             self.flush();
         }
     }
 
     fn epoch_end(&mut self, e: &EpochResult) {
         self.close_steps();
-        frame::epoch(
-            &mut self.buf,
-            e.epoch,
-            e.train_accuracy,
-            e.test_accuracy,
-            e.images_per_sec,
-        );
+        frame::epoch(&mut self.buf, e, self.images);
+        self.epochs.push((e.clone(), self.images));
+        self.refresh_resume();
         self.flush();
     }
 }
@@ -248,10 +285,27 @@ mod tests {
         assert_eq!(count(frame::THRESH), count(frame::IMAGE));
         assert_eq!(count(frame::RESULT), count(frame::IMAGE));
         assert!(all.contains(&frame::WEIGHTS));
-        assert!(all.contains(&frame::HISTORY));
         assert!(all.contains(&frame::PROGRESS));
         assert_eq!(all.last(), Some(&frame::PROGRESS));
         assert!(all.contains(&frame::EPOCH));
+    }
+
+    #[test]
+    fn late_viewer_gets_a_snapshot() {
+        let hub = Arc::new(Hub::new());
+        let mut tap = Tap::new(hub.clone(), 0.0, 2.0);
+        let data = synthetic(5, 1);
+        let mut t = Trainer::new(Params::default(), 784, 4, 10, 1);
+        t.fit(&data, None, 1, &mut tap, &Control::new(0));
+        let v = hub.join();
+        let intro: Vec<u8> = v.intro().iter().flat_map(|p| kinds(p)).collect();
+        let want = [
+            frame::WEIGHTS,
+            frame::HISTORY,
+            frame::EPOCH,
+            frame::PROGRESS,
+        ];
+        assert_eq!(intro, want);
     }
 
     #[test]
