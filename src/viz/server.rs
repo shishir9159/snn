@@ -12,12 +12,31 @@ use tungstenite::{Error as WsError, Message};
 
 const INDEX: &str = include_str!("../../web/index.html");
 
+macro_rules! font {
+    ($name:literal) => {
+        (
+            concat!("/fonts/", $name, ".woff2"),
+            include_bytes!(concat!("../../web/fonts/", $name, ".woff2")).as_slice(),
+        )
+    };
+}
+
+const FONTS: [(&str, &[u8]); 4] = [
+    font!("barlow-400"),
+    font!("barlow-500"),
+    font!("barlow-condensed-400"),
+    font!("barlow-condensed-600"),
+];
+
 /// Files compiled into the binary, by request path.
 fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
-    match path {
-        "/" | "/index.html" => Some(("text/html; charset=utf-8", INDEX.as_bytes())),
-        _ => None,
+    if path == "/" || path == "/index.html" {
+        return Some(("text/html; charset=utf-8", INDEX.as_bytes()));
     }
+    FONTS
+        .iter()
+        .find(|(p, _)| *p == path)
+        .map(|(_, body)| ("font/woff2", *body))
 }
 
 /// Accepts connections forever, one thread each.
@@ -155,9 +174,9 @@ mod tests {
     fn get(addr: SocketAddr, path: &str) -> String {
         let mut s = TcpStream::connect(addr).unwrap();
         write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
-        let mut out = String::new();
-        s.read_to_string(&mut out).unwrap();
-        out
+        let mut out = Vec::new();
+        s.read_to_end(&mut out).unwrap();
+        String::from_utf8_lossy(&out).into_owned()
     }
 
     #[test]
@@ -168,6 +187,8 @@ mod tests {
         assert!(page.contains("text/html"));
         assert!(page.contains("<html"));
         assert!(get(addr, "/missing").starts_with("HTTP/1.1 404"));
+        let font = get(addr, "/fonts/barlow-400.woff2");
+        assert!(font.contains("font/woff2") && font.contains("wOF2"));
     }
 
     #[test]
