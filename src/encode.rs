@@ -17,22 +17,23 @@ pub fn receptive_field(pixels: &[u8], width: usize, height: usize, out: &mut Vec
     assert_eq!(pixels.len(), width * height);
     out.clear();
     out.resize(width * height, 0.0);
-    for y in 0..height {
-        for x in 0..width {
-            let mut sum = 0.0;
-            for (ky, row) in KERNEL.iter().enumerate() {
-                let yy = (y + ky).wrapping_sub(2);
-                if yy >= height {
-                    continue;
-                }
-                for (kx, &k) in row.iter().enumerate() {
-                    let xx = (x + kx).wrapping_sub(2);
-                    if xx < width {
-                        sum += k * pixels[yy * width + xx] as f32;
-                    }
+    // scatter from lit pixels only; digit images are mostly background
+    for (at, &px) in pixels.iter().enumerate() {
+        if px == 0 {
+            continue;
+        }
+        let (y, x, v) = (at / width, at % width, px as f32 / 255.0);
+        for (ky, row) in KERNEL.iter().enumerate() {
+            let oy = (y + 2).wrapping_sub(ky);
+            if oy >= height {
+                continue;
+            }
+            for (kx, &k) in row.iter().enumerate() {
+                let ox = (x + 2).wrapping_sub(kx);
+                if ox < width {
+                    out[oy * width + ox] += k * v;
                 }
             }
-            out[y * width + x] = sum / 255.0;
         }
     }
 }
@@ -205,6 +206,36 @@ mod tests {
         assert_eq!(out[0], 1.0);
         assert_eq!(out[1], 0.625);
         assert_eq!(out[24], 0.0);
+    }
+
+    #[test]
+    fn scatter_matches_direct_convolution() {
+        let mut rng = Rng::new(3);
+        let img: Vec<u8> = (0..20 * 13)
+            .map(|_| {
+                if rng.f32() < 0.3 {
+                    rng.below(256) as u8
+                } else {
+                    0
+                }
+            })
+            .collect();
+        let mut out = Vec::new();
+        receptive_field(&img, 20, 13, &mut out);
+        for y in 0..13usize {
+            for x in 0..20usize {
+                let mut sum = 0.0;
+                for (ky, row) in KERNEL.iter().enumerate() {
+                    for (kx, &k) in row.iter().enumerate() {
+                        let (yy, xx) = ((y + ky).wrapping_sub(2), (x + kx).wrapping_sub(2));
+                        if yy < 13 && xx < 20 {
+                            sum += k * img[yy * 20 + xx] as f32 / 255.0;
+                        }
+                    }
+                }
+                assert!((out[y * 20 + x] - sum).abs() < 1e-5);
+            }
+        }
     }
 
     #[test]

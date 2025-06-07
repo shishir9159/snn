@@ -40,7 +40,10 @@ pub struct Layer {
     pub n_in: usize,
     pub n_out: usize,
     /// row-major, one row of `n_in` weights per output neuron
-    pub weights: Vec<f32>,
+    weights: Vec<f32>,
+    /// the same weights input-major, so a spike adds one contiguous run
+    by_input: Vec<f32>,
+    drive: Vec<f32>,
     pub neurons: Vec<Neuron>,
     /// homeostatic threshold scale: threshold = base * (1 + theta)
     pub theta: Vec<f32>,
@@ -61,10 +64,18 @@ impl Layer {
 
     pub fn with_weights(n_in: usize, n_out: usize, weights: Vec<f32>, p: &Params) -> Self {
         assert_eq!(weights.len(), n_in * n_out);
+        let mut by_input = vec![0.0; n_in * n_out];
+        for (j, row) in weights.chunks_exact(n_in).enumerate() {
+            for (i, &w) in row.iter().enumerate() {
+                by_input[i * n_out + j] = w;
+            }
+        }
         Self {
             n_in,
             n_out,
             weights,
+            by_input,
+            drive: vec![0.0; n_out],
             neurons: vec![Neuron::new(&p.lif); n_out],
             theta: vec![0.0; n_out],
             stdp: Stdp::new(&p.stdp),
@@ -73,8 +84,21 @@ impl Layer {
         }
     }
 
+    /// Row-major weights, one row per output neuron.
+    pub fn weights(&self) -> &[f32] {
+        &self.weights
+    }
+
     pub fn row(&self, j: usize) -> &[f32] {
         &self.weights[j * self.n_in..(j + 1) * self.n_in]
+    }
+
+    // copies neuron j's row into the input-major view
+    fn sync(&mut self, j: usize) {
+        let row = &self.weights[j * self.n_in..(j + 1) * self.n_in];
+        for (i, &w) in row.iter().enumerate() {
+            self.by_input[i * self.n_out + j] = w;
+        }
     }
 
     /// Runs one image through the layer. With `learn`, applies STDP on every
@@ -103,13 +127,15 @@ impl Layer {
         for t in 1..=train.steps() {
             let ti = t as i32;
             let active = train.active(t);
-            for (n, row) in self
-                .neurons
-                .iter_mut()
-                .zip(self.weights.chunks_exact(self.n_in))
-            {
+            self.drive.fill(0.0);
+            for &i in active {
+                let col = &self.by_input[i as usize * self.n_out..][..self.n_out];
+                for (d, &w) in self.drive.iter_mut().zip(col) {
+                    *d += w;
+                }
+            }
+            for (n, &input) in self.neurons.iter_mut().zip(&self.drive) {
                 if !n.is_refractory(ti) {
-                    let input: f32 = active.iter().map(|&i| row[i as usize]).sum();
                     n.integrate(ti, input, lif);
                 }
             }
@@ -136,6 +162,11 @@ impl Layer {
                     }
                 }
             }
+            if learn {
+                for &j in &fired {
+                    self.sync(j as usize);
+                }
+            }
 
             obs.step(&Step {
                 t,
@@ -153,6 +184,7 @@ impl Layer {
                 let row = &mut self.weights[w * self.n_in..(w + 1) * self.n_in];
                 self.stdp.depress_silent(row, train, p.silent_penalty);
                 normalize(row, p.w_norm, p.stdp.w_max);
+                self.sync(w);
             }
             // drive every neuron toward an equal share of wins
             let share = 1.0 / self.n_out as f32;
@@ -231,8 +263,9 @@ mod tests {
     #[test]
     fn single_winner_spikes() {
         let p = Params::default();
-        let mut l = Layer::with_weights(784, 3, vec![0.5; 784 * 3], &p);
-        l.weights[784..1568].iter_mut().for_each(|w| *w = 0.6);
+        let mut w = vec![0.5; 784 * 3];
+        w[784..1568].iter_mut().for_each(|w| *w = 0.6);
+        let mut l = Layer::with_weights(784, 3, w, &p);
         let mut obs = Count(0);
         let out = l.present(&encode(&bar(true), &p), &p, false, &mut obs);
         assert_eq!(obs.0, p.time_steps);
@@ -254,10 +287,25 @@ mod tests {
     fn inference_leaves_weights_alone() {
         let p = Params::default();
         let mut l = Layer::new(784, 4, &p, &mut Rng::new(2));
-        let before = l.weights.clone();
+        let before = l.weights().to_vec();
         l.present(&encode(&bar(true), &p), &p, false, &mut ());
-        assert_eq!(l.weights, before);
+        assert_eq!(l.weights(), before);
         assert!(l.theta.iter().all(|&t| t == 0.0));
+    }
+
+    #[test]
+    fn input_major_view_follows_learning() {
+        let p = Params::default();
+        let mut l = Layer::new(784, 5, &p, &mut Rng::new(4));
+        for _ in 0..5 {
+            l.present(&encode(&bar(true), &p), &p, true, &mut ());
+            l.present(&encode(&bar(false), &p), &p, true, &mut ());
+        }
+        for j in 0..5 {
+            for i in 0..784 {
+                assert_eq!(l.by_input[i * 5 + j], l.row(j)[i]);
+            }
+        }
     }
 
     #[test]

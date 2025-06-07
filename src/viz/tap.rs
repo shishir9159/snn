@@ -112,7 +112,7 @@ impl Tap {
         let w = frame::Weights {
             rows: layer.n_out,
             cols: layer.n_in,
-            w: &layer.weights,
+            w: layer.weights(),
             lo: self.w_range.0,
             hi: self.w_range.1,
             labels: &assigned,

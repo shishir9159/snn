@@ -192,12 +192,12 @@ fn build_trainer(
 fn save_outputs(a: &Args, t: &Trainer, side: usize) -> Result<(), String> {
     let l = &t.layer;
     if let Some(path) = &a.save {
-        weights::save(path, l.n_out, l.n_in, &l.weights).map_err(|e| e.to_string())?;
+        weights::save(path, l.n_out, l.n_in, l.weights()).map_err(|e| e.to_string())?;
         println!("weights saved to {}", path.display());
     }
     if let Some(path) = &a.weights_png {
         let (lo, hi) = (t.params.stdp.w_min, t.params.stdp.w_max);
-        weights::save_png(path, &l.weights, side, lo, hi).map_err(|e| e.to_string())?;
+        weights::save_png(path, l.weights(), side, lo, hi).map_err(|e| e.to_string())?;
         println!("weight maps saved to {}", path.display());
     }
     Ok(())
