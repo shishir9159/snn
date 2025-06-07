@@ -1,0 +1,9 @@
+[package]
+name = "snn-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flate2.workspace = true
+image.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "mnist-snn-rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "mnist_snn"
+
+[[bin]]
+name = "mnist-snn-rs"
+path = "src/main.rs"
+
+[dependencies]
+snn-core.workspace = true
+tungstenite.workspace = true

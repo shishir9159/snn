@@ -2,8 +2,8 @@ data := "data/mnist"
 mirror := "https://storage.googleapis.com/cvdf-datasets/mnist"
 
 # train on MNIST and serve the live view at http://127.0.0.1:7878
-snn-rs *args: mnist
-    cargo run --release -- --mnist {{data}} {{args}}
+mnist-snn-rs *args: mnist
+    cargo run --release -p mnist-snn-rs -- --mnist {{data}} {{args}}
 
 # fetch the MNIST idx files, skipping ones already present
 mnist:

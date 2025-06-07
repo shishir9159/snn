@@ -1,7 +1,7 @@
 //! Spike-timing-dependent plasticity with soft weight bounds.
 
-use crate::encode::SpikeTrain;
 use crate::params::StdpParams;
+use snn_core::encode::SpikeTrain;
 
 /// Weight change for a pre spike `dt = t_pre - t_post` steps from the post spike:
 /// potentiation when the pre spike leads (or coincides), depression when it follows.
@@ -68,8 +68,8 @@ impl Stdp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{Coding, EncodeParams};
-    use crate::rng::Rng;
+    use snn_core::encode::{Coding, EncodeParams};
+    use snn_core::rng::Rng;
 
     fn p() -> StdpParams {
         StdpParams::default()

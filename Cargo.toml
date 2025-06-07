@@ -1,18 +1,14 @@
-[package]
-name = "striking-neural-network"
+[workspace]
+resolver = "2"
+members = ["crates/snn-core", "mnist-snn-rs"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"
 
-[lib]
-name = "snn"
-path = "src/lib.rs"
-
-[[bin]]
-name = "snn"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
+snn-core = { path = "crates/snn-core" }
 flate2 = "=1.1.1"
 image = { version = "=0.25.6", default-features = false, features = ["png"] }
 tungstenite = "=0.26.2"

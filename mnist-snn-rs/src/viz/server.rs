@@ -3,20 +3,20 @@
 
 use super::frame::{self, Buf};
 use super::hub::Hub;
-use crate::train::Control;
+use snn_core::Control;
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 use tungstenite::{Error as WsError, Message};
 
-const INDEX: &str = include_str!("../../web/index.html");
+const INDEX: &str = include_str!("../../../web/index.html");
 
 macro_rules! font {
     ($name:literal) => {
         (
             concat!("/fonts/", $name, ".woff2"),
-            include_bytes!(concat!("../../web/fonts/", $name, ".woff2")).as_slice(),
+            include_bytes!(concat!("../../../web/fonts/", $name, ".woff2")).as_slice(),
         )
     };
 }

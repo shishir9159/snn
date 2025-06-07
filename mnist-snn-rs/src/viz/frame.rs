@@ -2,7 +2,7 @@
 //! `kind: u8, len: u32, payload`; one WebSocket message carries several.
 
 use crate::params::Params;
-use crate::train::{EpochResult, ImageInfo};
+use snn_core::{EpochResult, ImageInfo};
 
 pub const META: u8 = 1;
 pub const IMAGE: u8 = 2;

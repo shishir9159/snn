@@ -1,7 +1,41 @@
 //! Image → receptive-field potentials → input spike trains.
 
-use crate::params::{Coding, EncodeParams};
 use crate::rng::Rng;
+
+/// How pixel potentials become input spike trains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coding {
+    /// evenly spaced spikes, rate set by the potential
+    Regular,
+    /// Bernoulli spikes with the same mean rate
+    Poisson,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EncodeParams {
+    pub coding: Coding,
+    /// potential range mapped onto the frequency range (clamped)
+    pub pot_min: f32,
+    pub pot_max: f32,
+    pub freq_min: f32,
+    pub freq_max: f32,
+    /// spike period is ceil(period_scale / freq) steps
+    pub period_scale: f32,
+}
+
+/// Tuned for receptive-field potentials of MNIST digits.
+impl Default for EncodeParams {
+    fn default() -> Self {
+        Self {
+            coding: Coding::Regular,
+            pot_min: -1.069,
+            pot_max: 2.781,
+            freq_min: 1.0,
+            freq_max: 20.0,
+            period_scale: 600.0,
+        }
+    }
+}
 
 /// 5x5 on-centre, off-surround kernel.
 pub const KERNEL: [[f32; 5]; 5] = [

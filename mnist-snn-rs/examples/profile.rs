@@ -1,7 +1,8 @@
 //! Per-phase timing of the training pipeline on MNIST.
-//! usage: cargo run --release --example profile -- <mnist dir> [images]
+//! usage: cargo run --release -p mnist-snn-rs --example profile -- <mnist dir> [images]
 
-use snn::{dataset, encode, Layer, Params, Rng, SpikeTrain};
+use mnist_snn::{Layer, Params};
+use snn_core::{dataset, encode, Rng, SpikeTrain};
 use std::path::Path;
 use std::time::{Duration, Instant};
 

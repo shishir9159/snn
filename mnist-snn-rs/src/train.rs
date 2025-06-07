@@ -1,14 +1,10 @@
 //! Training loop: presents images, labels neurons by the classes they win, tracks accuracy.
 
-use crate::dataset::Dataset;
-use crate::encode::{receptive_field, SpikeTrain};
 use crate::layer::{Layer, Observer, Outcome, Step};
 use crate::params::Params;
-use crate::rng::Rng;
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Condvar, Mutex};
-use std::time::{Duration, Instant};
+use snn_core::encode::{receptive_field, SpikeTrain};
+use snn_core::{Control, Dataset, EpochResult, ImageInfo, Pacer, Recent, Rng};
+use std::time::Instant;
 
 /// Images in the running-accuracy window.
 const RECENT: usize = 500;
@@ -48,132 +44,6 @@ impl Labels {
     }
 }
 
-/// Pause, speed and stop requests shared with other threads.
-#[derive(Debug)]
-pub struct Control {
-    paused: AtomicBool,
-    lock: Mutex<()>,
-    wake: Condvar,
-    /// simulation steps per second, 0 for unthrottled
-    speed: AtomicU32,
-    stop: AtomicBool,
-    done: AtomicBool,
-}
-
-impl Control {
-    pub fn new(speed: u32) -> Self {
-        Self {
-            paused: AtomicBool::new(false),
-            lock: Mutex::new(()),
-            wake: Condvar::new(),
-            speed: AtomicU32::new(speed),
-            stop: AtomicBool::new(false),
-            done: AtomicBool::new(false),
-        }
-    }
-
-    pub fn set_paused(&self, paused: bool) {
-        let _g = self.lock.lock().unwrap();
-        self.paused.store(paused, Ordering::Relaxed);
-        self.wake.notify_all();
-    }
-
-    pub fn is_paused(&self) -> bool {
-        self.paused.load(Ordering::Relaxed)
-    }
-
-    pub fn set_speed(&self, steps_per_sec: u32) {
-        self.speed.store(steps_per_sec, Ordering::Relaxed);
-    }
-
-    pub fn speed(&self) -> u32 {
-        self.speed.load(Ordering::Relaxed)
-    }
-
-    pub fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
-        self.set_paused(false);
-    }
-
-    pub fn stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed)
-    }
-
-    /// Marks training as finished.
-    pub fn finish(&self) {
-        self.done.store(true, Ordering::Relaxed);
-    }
-
-    pub fn is_done(&self) -> bool {
-        self.done.load(Ordering::Relaxed)
-    }
-
-    /// Blocks while paused; returns how long it waited.
-    pub fn wait_while_paused(&self) -> Duration {
-        if !self.is_paused() {
-            return Duration::ZERO;
-        }
-        let t0 = Instant::now();
-        let mut g = self.lock.lock().unwrap();
-        while self.is_paused() && !self.stopped() {
-            g = self.wake.wait(g).unwrap();
-        }
-        t0.elapsed()
-    }
-}
-
-/// Holds the simulation to the control's step rate.
-struct Pacer {
-    origin: Instant,
-    steps: u64,
-    rate: u32,
-}
-
-impl Pacer {
-    fn new() -> Self {
-        Self {
-            origin: Instant::now(),
-            steps: 0,
-            rate: 0,
-        }
-    }
-
-    fn tick(&mut self, ctl: &Control) {
-        if ctl.wait_while_paused() > Duration::ZERO || ctl.speed() != self.rate {
-            *self = Self {
-                rate: ctl.speed(),
-                ..Self::new()
-            };
-        }
-        if self.rate == 0 {
-            return;
-        }
-        self.steps += 1;
-        let due = self.origin + Duration::from_secs_f64(self.steps as f64 / self.rate as f64);
-        let now = Instant::now();
-        // sleep in chunks of at least 2 ms; coarse OS timers would overshoot finer waits
-        if due > now + Duration::from_millis(2) {
-            std::thread::sleep(due - now);
-        } else if now > due + Duration::from_millis(250) {
-            // fell far behind (e.g. a slow frame); don't sprint to catch up
-            *self = Self {
-                rate: self.rate,
-                ..Self::new()
-            };
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ImageInfo {
-    pub epoch: usize,
-    /// position within the epoch
-    pub index: usize,
-    pub total: usize,
-    pub label: u8,
-    pub learn: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct ImageResult {
     pub info: ImageInfo,
@@ -182,14 +52,6 @@ pub struct ImageResult {
     pub predicted: Option<u8>,
     pub correct: bool,
     pub running_accuracy: f32,
-}
-
-#[derive(Debug, Clone)]
-pub struct EpochResult {
-    pub epoch: usize,
-    pub train_accuracy: f32,
-    pub test_accuracy: Option<f32>,
-    pub images_per_sec: f32,
 }
 
 /// Receives training events. Every method defaults to a no-op.
@@ -247,8 +109,7 @@ pub struct Trainer {
     rng: Rng,
     pot: Vec<f32>,
     train: SpikeTrain,
-    recent: VecDeque<bool>,
-    recent_hits: usize,
+    recent: Recent,
     pacer: Pacer,
 }
 
@@ -268,15 +129,14 @@ impl Trainer {
             rng,
             pot: Vec::new(),
             train: SpikeTrain::new(),
-            recent: VecDeque::with_capacity(RECENT),
-            recent_hits: 0,
+            recent: Recent::new(RECENT),
             pacer: Pacer::new(),
         }
     }
 
     /// Accuracy over the last few hundred training images.
     pub fn running_accuracy(&self) -> f32 {
-        self.recent_hits as f32 / self.recent.len().max(1) as f32
+        self.recent.rate()
     }
 
     /// Encodes and presents one image. Learning images update weights and labels.
@@ -308,11 +168,7 @@ impl Trainer {
             if let Some(w) = outcome.winner {
                 self.labels.record(w, info.label);
             }
-            if self.recent.len() == RECENT {
-                self.recent_hits -= self.recent.pop_front().unwrap() as usize;
-            }
-            self.recent.push_back(correct);
-            self.recent_hits += correct as usize;
+            self.recent.push(correct);
         }
         let r = ImageResult {
             info,
@@ -428,7 +284,7 @@ impl Trainer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataset::synthetic;
+    use snn_core::dataset::synthetic;
 
     #[test]
     fn labels_follow_recent_wins() {
@@ -441,29 +297,6 @@ mod tests {
         }
         assert_eq!(l.of(0), Some(1));
         assert_eq!(l.of(1), None);
-    }
-
-    #[test]
-    fn pacing_holds_the_step_rate() {
-        let ctl = Control::new(2000);
-        let mut p = Pacer::new();
-        let t0 = Instant::now();
-        for _ in 0..200 {
-            p.tick(&ctl);
-        }
-        let dt = t0.elapsed().as_secs_f32();
-        assert!((0.08..0.3).contains(&dt), "200 steps at 2000/s took {dt}s");
-    }
-
-    #[test]
-    fn pause_blocks_until_resumed() {
-        let ctl = std::sync::Arc::new(Control::new(0));
-        ctl.set_paused(true);
-        let c = ctl.clone();
-        let h = std::thread::spawn(move || c.wait_while_paused());
-        std::thread::sleep(Duration::from_millis(30));
-        ctl.set_paused(false);
-        assert!(h.join().unwrap() >= Duration::from_millis(20));
     }
 
     #[test]

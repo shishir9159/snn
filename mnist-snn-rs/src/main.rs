@@ -1,7 +1,8 @@
-use snn::dataset::{self, Dataset};
-use snn::train::{Control, EpochResult, ImageResult, Labels, Monitor, Trainer};
-use snn::viz::{frame, server, Hub, Tap};
-use snn::{weights, Layer, Params, Rng};
+use mnist_snn::train::{ImageResult, Labels, Monitor, Trainer};
+use mnist_snn::viz::{frame, server, Hub, Tap};
+use mnist_snn::{Layer, Params};
+use snn_core::dataset::{self, Dataset};
+use snn_core::{weights, Control, EpochResult, Rng};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -9,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const USAGE: &str = "\
-usage: snn [options]
+usage: mnist-snn-rs [options]
   --mnist DIR        MNIST idx files (plain or .gz) in DIR
   --png DIR          images in DIR/<class>/*.png
                      (default: synthetic digits)

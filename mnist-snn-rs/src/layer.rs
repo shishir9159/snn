@@ -1,11 +1,11 @@
 //! Winner-take-all output layer fully connected to the input spike train.
 
-use crate::encode::SpikeTrain;
 use crate::neuron::Neuron;
 use crate::params::Params;
-use crate::rng::Rng;
 use crate::stdp::Stdp;
-use crate::weights;
+use snn_core::encode::SpikeTrain;
+use snn_core::rng::Rng;
+use snn_core::weights;
 
 /// State after one simulated step, handed to an [`Observer`].
 pub struct Step<'a> {
@@ -231,7 +231,7 @@ fn normalize(row: &mut [f32], norm: f32, w_max: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encode::receptive_field;
+    use snn_core::encode::receptive_field;
 
     fn encode(img: &[u8], p: &Params) -> SpikeTrain {
         let mut pot = Vec::new();

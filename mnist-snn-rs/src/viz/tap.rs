@@ -2,9 +2,10 @@
 
 use super::frame::{self, Buf};
 use super::hub::Hub;
-use crate::encode::SpikeTrain;
 use crate::layer::{Layer, Step};
-use crate::train::{EpochResult, ImageInfo, ImageResult, Labels, Monitor};
+use crate::train::{ImageResult, Labels, Monitor};
+use snn_core::encode::SpikeTrain;
+use snn_core::{EpochResult, ImageInfo};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -239,9 +240,10 @@ impl Monitor for Tap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataset::synthetic;
-    use crate::train::{Control, Trainer};
+    use crate::train::Trainer;
     use crate::Params;
+    use snn_core::dataset::synthetic;
+    use snn_core::Control;
 
     fn kinds(packet: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
