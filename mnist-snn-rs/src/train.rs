@@ -4,6 +4,7 @@ use crate::layer::{Layer, Observer, Outcome, Step};
 use crate::params::Params;
 use snn_core::encode::{receptive_field, SpikeTrain};
 use snn_core::{Control, Dataset, EpochResult, ImageInfo, Pacer, Recent, Rng};
+use snn_live::app::Printer;
 use std::time::Instant;
 
 /// Images in the running-accuracy window.
@@ -80,6 +81,16 @@ impl<A: Monitor, B: Monitor> Monitor for (A, B) {
     fn epoch_end(&mut self, e: &EpochResult) {
         self.0.epoch_end(e);
         self.1.epoch_end(e);
+    }
+}
+
+impl Monitor for Printer {
+    fn image_end(&mut self, r: &ImageResult, _layer: &Layer, _labels: &Labels) {
+        self.image(&r.info, r.running_accuracy);
+    }
+
+    fn epoch_end(&mut self, e: &EpochResult) {
+        self.epoch(e);
     }
 }
 

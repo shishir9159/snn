@@ -1,6 +1,7 @@
-//! Live view shared by every model: binary records, a broadcast hub, the web
-//! server and a stream helper for trainer taps.
+//! Live view shared by every model: binary records, a broadcast hub, the
+//! web server, a stream helper for trainer taps and the binary harness.
 
+pub mod app;
 pub mod frame;
 pub mod hub;
 pub mod server;
