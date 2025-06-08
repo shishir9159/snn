@@ -1,19 +1,19 @@
 //! Binary records streamed to the dashboard. Little endian. Each record is
 //! `kind: u8, len: u32, payload`; one WebSocket message carries several.
+//!
+//! Kinds below 16 are shared by every model, except 3, 4, 5 and 9 which belong
+//! to the winner-take-all model (mnist-snn-rs). Other models use 16 and up.
 
-use crate::params::Params;
 use snn_core::{EpochResult, ImageInfo};
 
 pub const META: u8 = 1;
 pub const IMAGE: u8 = 2;
-pub const STEPS: u8 = 3;
-pub const RESULT: u8 = 4;
-pub const WEIGHTS: u8 = 5;
 pub const EPOCH: u8 = 6;
 pub const STATE: u8 = 7;
 pub const PROGRESS: u8 = 8;
-pub const THRESH: u8 = 9;
 pub const HISTORY: u8 = 10;
+pub const PARAMS: u8 = 11;
+pub const POPS: u8 = 12;
 
 /// Record writer. `begin`/`end` bracket a record and patch in its length.
 #[derive(Debug, Default)]
@@ -100,41 +100,129 @@ impl Buf {
 
 /// Static description of the run, sent first to every viewer.
 pub struct Meta<'a> {
+    /// selects the dashboard view
+    pub model: &'a str,
     pub dataset: &'a str,
     pub width: usize,
     pub height: usize,
-    pub n_out: usize,
     pub classes: usize,
     pub n_train: usize,
     pub n_test: usize,
     pub epochs: usize,
-    pub params: &'a Params,
+    /// simulation steps per image
+    pub steps: usize,
+    pub dt_ms: f32,
 }
 
 pub fn meta(b: &mut Buf, m: &Meta) {
-    let p = m.params;
     b.begin(META);
     b.u16(m.width as u16);
     b.u16(m.height as u16);
-    b.u16(m.n_out as u16);
-    b.u16(p.time_steps as u16);
     b.u8(m.classes as u8);
     b.u32(m.n_train as u32);
     b.u32(m.n_test as u32);
     b.u16(m.epochs as u16);
-    for v in [
-        p.stdp.w_min,
-        p.stdp.w_max,
-        p.lif.rest,
-        p.lif.floor,
-        p.lif.leak,
-    ] {
-        b.f32(v);
-    }
-    b.u16(p.lif.t_ref as u16);
-    b.f32(p.threshold_div);
-    b.f32(p.stdp.sigma);
+    b.u16(m.steps as u16);
+    b.f32(m.dt_ms);
+    b.str(m.model);
     b.str(m.dataset);
+    b.end();
+}
+
+/// One row of the model panel: a number, or text when it doesn't fit one.
+pub struct Param<'a> {
+    pub name: &'a str,
+    pub value: f32,
+    pub text: String,
+    pub unit: &'a str,
+}
+
+impl<'a> Param<'a> {
+    pub fn num(name: &'a str, value: f32, unit: &'a str) -> Self {
+        Self {
+            name,
+            value,
+            text: String::new(),
+            unit,
+        }
+    }
+
+    pub fn text(name: &'a str, text: String) -> Self {
+        Self {
+            name,
+            value: f32::NAN,
+            text,
+            unit: "",
+        }
+    }
+}
+
+pub fn params(b: &mut Buf, title: &str, ps: &[Param]) {
+    b.begin(PARAMS);
+    b.str(title);
+    b.u8(ps.len() as u8);
+    for p in ps {
+        b.str(p.name);
+        b.f32(p.value);
+        b.str(&p.text);
+        b.str(p.unit);
+    }
+    b.end();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Input = 0,
+    Latent = 1,
+    Prediction = 2,
+    Error = 3,
+    Label = 4,
+    Output = 5,
+}
+
+/// A group of neurons, drawn as a `w`×`h` grid.
+pub struct Pop<'a> {
+    pub name: &'a str,
+    pub size: usize,
+    pub w: usize,
+    pub h: usize,
+    pub role: Role,
+}
+
+impl<'a> Pop<'a> {
+    /// A population laid out as a near-square grid.
+    pub fn new(name: &'a str, size: usize, role: Role) -> Self {
+        let w = ((size as f32).sqrt().ceil() as usize).max(1);
+        Self {
+            name,
+            size,
+            w,
+            h: size.div_ceil(w),
+            role,
+        }
+    }
+
+    pub fn grid(name: &'a str, w: usize, h: usize, role: Role) -> Self {
+        Self {
+            name,
+            size: w * h,
+            w,
+            h,
+            role,
+        }
+    }
+}
+
+pub fn pops(b: &mut Buf, ps: &[Pop]) {
+    b.begin(POPS);
+    b.u8(ps.len() as u8);
+    for p in ps {
+        b.str(p.name);
+        b.u16(p.size as u16);
+        b.u16(p.w as u16);
+        b.u16(p.h as u16);
+        b.u8(p.role as u8);
+    }
     b.end();
 }
 
@@ -151,81 +239,14 @@ pub fn image(b: &mut Buf, seq: u32, info: &ImageInfo, pixels: &[u8]) {
     b.end();
 }
 
-pub fn thresholds(b: &mut Buf, th: &[f32]) {
-    b.begin(THRESH);
-    th.iter().for_each(|&v| b.f32(v));
-    b.end();
-}
-
-/// Opens a STEPS record; returns the offset of its step count for [`Buf::patch_u16`].
-pub fn steps_begin(b: &mut Buf, t0: usize) -> usize {
-    b.begin(STEPS);
+/// Opens a record of per-step entries; returns the offset of its step count
+/// for [`Buf::patch_u16`].
+pub fn steps_begin(b: &mut Buf, kind: u8, t0: usize) -> usize {
+    b.begin(kind);
     b.u16(t0 as u16);
     let at = b.len();
     b.u16(0);
     at
-}
-
-/// One step inside an open STEPS record.
-pub fn step(b: &mut Buf, active: &[u16], fired: &[u16], potentials: &[f32], winner: Option<usize>) {
-    b.u16(active.len() as u16);
-    active.iter().for_each(|&i| b.u16(i));
-    b.u16(fired.len() as u16);
-    fired.iter().for_each(|&i| b.u16(i));
-    potentials.iter().for_each(|&v| b.f32(v));
-    b.i16(winner.map_or(-1, |w| w as i16));
-}
-
-pub struct Result<'a> {
-    pub seq: u32,
-    pub winner: Option<usize>,
-    pub predicted: Option<u8>,
-    pub correct: bool,
-    pub learn: bool,
-    pub running_accuracy: f32,
-    pub spikes: &'a [u32],
-    pub theta: &'a [f32],
-    pub labels: &'a [Option<u8>],
-}
-
-pub fn result(b: &mut Buf, r: &Result) {
-    b.begin(RESULT);
-    b.u32(r.seq);
-    b.i16(r.winner.map_or(-1, |w| w as i16));
-    b.u8(r.predicted.unwrap_or(255));
-    b.u8(r.correct as u8);
-    b.u8(r.learn as u8);
-    b.f32(r.running_accuracy);
-    r.spikes
-        .iter()
-        .for_each(|&s| b.u16(s.min(u16::MAX as u32) as u16));
-    r.theta.iter().for_each(|&t| b.f32(t));
-    r.labels.iter().for_each(|l| b.u8(l.unwrap_or(255)));
-    b.end();
-}
-
-pub struct Weights<'a> {
-    pub rows: usize,
-    pub cols: usize,
-    pub w: &'a [f32],
-    pub lo: f32,
-    pub hi: f32,
-    pub labels: &'a [Option<u8>],
-    pub theta: &'a [f32],
-}
-
-/// Weights quantised to bytes over [lo, hi], then each row's label and theta.
-pub fn weights(b: &mut Buf, x: &Weights) {
-    b.begin(WEIGHTS);
-    b.u16(x.rows as u16);
-    b.u16(x.cols as u16);
-    let k = 255.0 / (x.hi - x.lo).max(f32::EPSILON);
-    for &v in x.w {
-        b.u8(((v - x.lo) * k).clamp(0.0, 255.0) as u8);
-    }
-    x.labels.iter().for_each(|l| b.u8(l.unwrap_or(255)));
-    x.theta.iter().for_each(|&t| b.f32(t));
-    b.end();
 }
 
 /// A finished epoch; `images` is the training images seen by then.
@@ -271,9 +292,10 @@ pub fn progress(b: &mut Buf, p: &Progress) {
     b.end();
 }
 
-/// Running accuracy samples as (images seen, accuracy).
-pub fn history(b: &mut Buf, points: &[(u32, f32)]) {
+/// Samples of one series as (images seen, value); series 0 is running accuracy.
+pub fn history(b: &mut Buf, series: u8, points: &[(u32, f32)]) {
     b.begin(HISTORY);
+    b.u8(series);
     b.u32(points.len() as u32);
     for &(n, a) in points {
         b.u32(n);
@@ -282,22 +304,22 @@ pub fn history(b: &mut Buf, points: &[(u32, f32)]) {
     b.end();
 }
 
+/// Splits a packet into (kind, payload) records.
+pub fn records(bytes: &[u8]) -> Vec<(u8, &[u8])> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at + 5 <= bytes.len() {
+        let len = u32::from_le_bytes(bytes[at + 1..at + 5].try_into().unwrap()) as usize;
+        out.push((bytes[at], &bytes[at + 5..at + 5 + len]));
+        at += 5 + len;
+    }
+    assert_eq!(at, bytes.len(), "truncated record");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Splits a packet into (kind, payload) records.
-    fn records(bytes: &[u8]) -> Vec<(u8, &[u8])> {
-        let mut out = Vec::new();
-        let mut at = 0;
-        while at < bytes.len() {
-            let len = u32::from_le_bytes(bytes[at + 1..at + 5].try_into().unwrap()) as usize;
-            out.push((bytes[at], &bytes[at + 5..at + 5 + len]));
-            at += 5 + len;
-        }
-        assert_eq!(at, bytes.len());
-        out
-    }
 
     #[test]
     fn records_carry_their_length() {
@@ -321,79 +343,66 @@ mod tests {
     }
 
     #[test]
-    fn steps_record_layout() {
+    fn steps_record_patches_its_count() {
         let mut b = Buf::new();
-        let at = steps_begin(&mut b, 7);
-        step(&mut b, &[3, 9], &[1], &[0.5, -1.0], Some(1));
-        step(&mut b, &[], &[], &[0.0, 0.0], None);
+        let at = steps_begin(&mut b, 40, 7);
+        b.u8(1);
+        b.u8(2);
         b.patch_u16(at, 2);
         b.end();
         let bytes = b.take();
-        let r = records(&bytes);
-        let p = r[0].1;
-        // t0, count, then (2 + 2*2) + (2 + 2) + 8 + 2 and 2 + 2 + 8 + 2
-        assert_eq!(p.len(), 4 + 20 + 14);
-        assert_eq!(&p[..4], &[7, 0, 2, 0]);
-        assert_eq!(&p[4..10], &[2, 0, 3, 0, 9, 0]);
-        assert_eq!(i16::from_le_bytes([p[22], p[23]]), 1);
-        assert_eq!(i16::from_le_bytes([p[36], p[37]]), -1);
+        assert_eq!(records(&bytes), vec![(40, &[7, 0, 2, 0, 1, 2][..])]);
     }
 
     #[test]
-    fn weights_quantise_to_bytes() {
+    fn meta_params_and_pops_layout() {
         let mut b = Buf::new();
-        let x = Weights {
-            rows: 1,
-            cols: 3,
-            w: &[0.0, 1.0, 5.0],
-            lo: 0.0,
-            hi: 2.0,
-            labels: &[Some(4)],
-            theta: &[0.0],
-        };
-        weights(&mut b, &x);
-        let bytes = b.take();
-        assert_eq!(
-            records(&bytes)[0].1,
-            &[1, 0, 3, 0, 0, 127, 255, 4, 0, 0, 0, 0]
-        );
-    }
-
-    #[test]
-    fn meta_and_result_sizes() {
-        let p = Params::default();
         let m = Meta {
+            model: "wta",
             dataset: "synthetic",
             width: 28,
             height: 28,
-            n_out: 4,
             classes: 10,
             n_train: 10,
             n_test: 5,
             epochs: 1,
-            params: &p,
+            steps: 200,
+            dt_ms: 1.0,
         };
-        let mut b = Buf::new();
         meta(&mut b, &m);
-        result(
-            &mut b,
-            &Result {
-                seq: 1,
-                winner: Some(2),
-                predicted: None,
-                correct: false,
-                learn: true,
-                running_accuracy: 0.25,
-                spikes: &[0, 1, 2, 3],
-                theta: &[0.0; 4],
-                labels: &[Some(1), None, Some(3), None],
-            },
-        );
+        let ps = [
+            Param::num("Leak", 0.15, "/ms"),
+            Param::text("Weights", "0-2".into()),
+        ];
+        params(&mut b, "LIF", &ps);
+        let ps = [
+            Pop::grid("input", 28, 28, Role::Input),
+            Pop::new("output", 40, Role::Output),
+        ];
+        pops(&mut b, &ps);
         let bytes = b.take();
         let r = records(&bytes);
-        assert_eq!(r[0].1.len(), 8 + 1 + 8 + 2 + 20 + 2 + 8 + 2 + 9);
-        assert_eq!(r[1].1.len(), 4 + 2 + 3 + 4 + 8 + 16 + 4);
-        assert_eq!(&r[1].1[r[1].1.len() - 4..], &[1, 255, 3, 255]);
+        assert_eq!(r[0].1.len(), 21 + 5 + 11);
+        assert_eq!(&r[0].1[21..26], b"\x03\x00wta");
+        let p = r[1].1;
+        assert_eq!(p[5], 2, "two params");
+        assert_eq!(&p[6..12], b"\x04\x00Leak");
+        let q = r[2].1;
+        assert_eq!(q[0], 2);
+        // 40 outputs as a 7x6 grid
+        let out = &q[1 + 7 + 7..];
+        assert_eq!(&out[..8], b"\x06\x00output");
+        assert_eq!(&out[8..15], &[40, 0, 7, 0, 6, 0, Role::Output as u8]);
+    }
+
+    #[test]
+    fn history_carries_its_series() {
+        let mut b = Buf::new();
+        history(&mut b, 1, &[(5, 0.25)]);
+        let bytes = b.take();
+        let r = records(&bytes);
+        assert_eq!(r[0].1[..5], [1, 1, 0, 0, 0]);
+        assert_eq!(r[0].1.len(), 1 + 4 + 8);
     }
 
     #[test]

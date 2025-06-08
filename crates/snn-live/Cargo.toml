@@ -1,0 +1,9 @@
+[package]
+name = "snn-live"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+snn-core.workspace = true
+tungstenite.workspace = true

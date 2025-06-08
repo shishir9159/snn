@@ -1,8 +1,10 @@
+use mnist_snn::tap::Tap;
 use mnist_snn::train::{ImageResult, Labels, Monitor, Trainer};
-use mnist_snn::viz::{frame, server, Hub, Tap};
 use mnist_snn::{Layer, Params};
 use snn_core::dataset::{self, Dataset};
 use snn_core::{weights, Control, EpochResult, Rng};
+use snn_live::frame::{self, Param, Pop, Role};
+use snn_live::{server, Hub};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -204,6 +206,23 @@ fn save_outputs(a: &Args, t: &Trainer, side: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// Rows of the dashboard's model panel.
+fn model_params(p: &Params) -> Vec<Param<'static>> {
+    let div = if p.threshold_div == 1.0 {
+        String::new()
+    } else {
+        format!("÷{} ", p.threshold_div)
+    };
+    vec![
+        Param::text("Threshold", div + "adaptive"),
+        Param::num("Leak", p.lif.leak, "/ms"),
+        Param::num("Refractory", p.lif.t_ref as f32, "ms"),
+        Param::num("Floor", p.lif.floor, ""),
+        Param::text("Weights", format!("{}–{}", p.stdp.w_min, p.stdp.w_max)),
+        Param::num("Learning rate", p.stdp.sigma, ""),
+    ]
+}
+
 fn run(a: Args) -> Result<(), String> {
     let (train, test) = load_data(&a)?;
     println!(
@@ -240,17 +259,24 @@ fn run(a: Args) -> Result<(), String> {
     let ctl = Arc::new(Control::new(a.speed));
     let mut b = frame::Buf::new();
     let meta = frame::Meta {
+        model: "wta",
         dataset: &train.name,
         width: train.width,
         height: train.height,
-        n_out: trainer.layer.n_out,
         classes,
         n_train: train.len(),
         n_test: test.len(),
         epochs,
-        params: &params,
+        steps: params.time_steps,
+        dt_ms: 1.0,
     };
     frame::meta(&mut b, &meta);
+    frame::params(&mut b, "Neuron model · LIF", &model_params(&params));
+    let pops = [
+        Pop::grid("input", train.width, train.height, Role::Input),
+        Pop::new("output", trainer.layer.n_out, Role::Output),
+    ];
+    frame::pops(&mut b, &pops);
     hub.set_meta(b.take());
 
     let listener =

@@ -1,13 +1,86 @@
 //! Trainer-side encoder: turns training events into packets on the hub.
 
-use super::frame::{self, Buf};
-use super::hub::Hub;
 use crate::layer::{Layer, Step};
 use crate::train::{ImageResult, Labels, Monitor};
 use snn_core::encode::SpikeTrain;
 use snn_core::{EpochResult, ImageInfo};
+use snn_live::frame::{self, Buf};
+use snn_live::Hub;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+pub const STEPS: u8 = 3;
+pub const RESULT: u8 = 4;
+pub const WEIGHTS: u8 = 5;
+pub const THRESH: u8 = 9;
+
+/// One step inside an open STEPS record.
+pub fn step(b: &mut Buf, active: &[u16], fired: &[u16], potentials: &[f32], winner: Option<usize>) {
+    b.u16(active.len() as u16);
+    active.iter().for_each(|&i| b.u16(i));
+    b.u16(fired.len() as u16);
+    fired.iter().for_each(|&i| b.u16(i));
+    potentials.iter().for_each(|&v| b.f32(v));
+    b.i16(winner.map_or(-1, |w| w as i16));
+}
+
+pub fn thresholds(b: &mut Buf, th: &[f32]) {
+    b.begin(THRESH);
+    th.iter().for_each(|&v| b.f32(v));
+    b.end();
+}
+
+pub struct Result<'a> {
+    pub seq: u32,
+    pub winner: Option<usize>,
+    pub predicted: Option<u8>,
+    pub correct: bool,
+    pub learn: bool,
+    pub running_accuracy: f32,
+    pub spikes: &'a [u32],
+    pub theta: &'a [f32],
+    pub labels: &'a [Option<u8>],
+}
+
+pub fn result(b: &mut Buf, r: &Result) {
+    b.begin(RESULT);
+    b.u32(r.seq);
+    b.i16(r.winner.map_or(-1, |w| w as i16));
+    b.u8(r.predicted.unwrap_or(255));
+    b.u8(r.correct as u8);
+    b.u8(r.learn as u8);
+    b.f32(r.running_accuracy);
+    r.spikes
+        .iter()
+        .for_each(|&s| b.u16(s.min(u16::MAX as u32) as u16));
+    r.theta.iter().for_each(|&t| b.f32(t));
+    r.labels.iter().for_each(|l| b.u8(l.unwrap_or(255)));
+    b.end();
+}
+
+pub struct Weights<'a> {
+    pub rows: usize,
+    pub cols: usize,
+    pub w: &'a [f32],
+    pub lo: f32,
+    pub hi: f32,
+    pub labels: &'a [Option<u8>],
+    pub theta: &'a [f32],
+}
+
+/// Weights quantised to bytes over [lo, hi], then each row's label and theta.
+pub fn weights(b: &mut Buf, x: &Weights) {
+    b.begin(WEIGHTS);
+    b.u16(x.rows as u16);
+    b.u16(x.cols as u16);
+    let k = 255.0 / (x.hi - x.lo).max(f32::EPSILON);
+    for &v in x.w {
+        b.u8(((v - x.lo) * k).clamp(0.0, 255.0) as u8);
+    }
+    x.labels.iter().for_each(|l| b.u8(l.unwrap_or(255)));
+    x.theta.iter().for_each(|&t| b.f32(t));
+    b.end();
+}
 
 /// Packets go out at most this often.
 const FLUSH: Duration = Duration::from_millis(16);
@@ -110,7 +183,7 @@ impl Tap {
     fn encode_weights(&mut self, layer: &Layer, labels: &Labels) {
         let assigned: Vec<Option<u8>> = (0..layer.n_out).map(|j| labels.of(j)).collect();
         let mut b = Buf::new();
-        let w = frame::Weights {
+        let w = Weights {
             rows: layer.n_out,
             cols: layer.n_in,
             w: layer.weights(),
@@ -119,7 +192,7 @@ impl Tap {
             labels: &assigned,
             theta: &layer.theta,
         };
-        frame::weights(&mut b, &w);
+        weights(&mut b, &w);
         self.weights_rec = b.take();
     }
 
@@ -127,7 +200,7 @@ impl Tap {
     fn refresh_resume(&mut self) {
         let mut b = Buf::new();
         b.raw(&self.weights_rec);
-        frame::history(&mut b, &self.history);
+        frame::history(&mut b, 0, &self.history);
         for (e, images) in &self.epochs {
             frame::epoch(&mut b, e, *images);
         }
@@ -169,15 +242,15 @@ impl Monitor for Tap {
         }
         if s.t == 1 {
             self.close_steps();
-            frame::thresholds(&mut self.buf, s.thresholds);
+            thresholds(&mut self.buf, s.thresholds);
         }
         let (at, n) = match self.steps_open {
             Some(open) => open,
-            None => (frame::steps_begin(&mut self.buf, s.t), 0),
+            None => (frame::steps_begin(&mut self.buf, STEPS, s.t), 0),
         };
         self.potentials.clear();
         self.potentials.extend(s.neurons.iter().map(|n| n.p));
-        frame::step(&mut self.buf, s.active, s.fired, &self.potentials, s.winner);
+        step(&mut self.buf, s.active, s.fired, &self.potentials, s.winner);
         self.steps_open = Some((at, n + 1));
         if self.last_flush.elapsed() >= FLUSH {
             self.flush();
@@ -205,7 +278,7 @@ impl Monitor for Tap {
         if self.streaming {
             let assigned: Vec<Option<u8>> = (0..layer.n_out).map(|j| labels.of(j)).collect();
             self.close_steps();
-            let res = frame::Result {
+            let res = Result {
                 seq: self.seq,
                 winner: r.outcome.winner,
                 predicted: r.predicted,
@@ -216,7 +289,7 @@ impl Monitor for Tap {
                 theta: &layer.theta,
                 labels: &assigned,
             };
-            frame::result(&mut self.buf, &res);
+            result(&mut self.buf, &res);
         }
         if send_weights {
             self.close_steps();
@@ -244,15 +317,10 @@ mod tests {
     use crate::Params;
     use snn_core::dataset::synthetic;
     use snn_core::Control;
+    use snn_live::frame::records;
 
     fn kinds(packet: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut at = 0;
-        while at < packet.len() {
-            out.push(packet[at]);
-            at += 5 + u32::from_le_bytes(packet[at + 1..at + 5].try_into().unwrap()) as usize;
-        }
-        out
+        records(packet).iter().map(|r| r.0).collect()
     }
 
     #[test]
@@ -284,9 +352,9 @@ mod tests {
             .collect();
         let count = |kind| all.iter().filter(|&&k| k == kind).count();
         assert!(count(frame::IMAGE) >= 1);
-        assert_eq!(count(frame::THRESH), count(frame::IMAGE));
-        assert_eq!(count(frame::RESULT), count(frame::IMAGE));
-        assert!(all.contains(&frame::WEIGHTS));
+        assert_eq!(count(THRESH), count(frame::IMAGE));
+        assert_eq!(count(RESULT), count(frame::IMAGE));
+        assert!(all.contains(&WEIGHTS));
         assert!(all.contains(&frame::PROGRESS));
         assert_eq!(all.last(), Some(&frame::PROGRESS));
         assert!(all.contains(&frame::EPOCH));
@@ -301,12 +369,7 @@ mod tests {
         t.fit(&data, None, 1, &mut tap, &Control::new(0));
         let v = hub.join();
         let intro: Vec<u8> = v.intro().iter().flat_map(|p| kinds(p)).collect();
-        let want = [
-            frame::WEIGHTS,
-            frame::HISTORY,
-            frame::EPOCH,
-            frame::PROGRESS,
-        ];
+        let want = [WEIGHTS, frame::HISTORY, frame::EPOCH, frame::PROGRESS];
         assert_eq!(intro, want);
     }
 
@@ -320,5 +383,65 @@ mod tests {
         assert!(tap.history.len() < HISTORY);
         assert!(tap.history_every >= 2);
         assert!(tap.history.windows(2).all(|w| w[0].0 < w[1].0));
+    }
+
+    #[test]
+    fn steps_record_layout() {
+        let mut b = Buf::new();
+        let at = frame::steps_begin(&mut b, STEPS, 7);
+        step(&mut b, &[3, 9], &[1], &[0.5, -1.0], Some(1));
+        step(&mut b, &[], &[], &[0.0, 0.0], None);
+        b.patch_u16(at, 2);
+        b.end();
+        let bytes = b.take();
+        let r = records(&bytes);
+        let p = r[0].1;
+        // t0, count, then (2 + 2*2) + (2 + 2) + 8 + 2 and 2 + 2 + 8 + 2
+        assert_eq!(p.len(), 4 + 20 + 14);
+        assert_eq!(&p[..4], &[7, 0, 2, 0]);
+        assert_eq!(&p[4..10], &[2, 0, 3, 0, 9, 0]);
+        assert_eq!(i16::from_le_bytes([p[22], p[23]]), 1);
+        assert_eq!(i16::from_le_bytes([p[36], p[37]]), -1);
+    }
+
+    #[test]
+    fn weights_quantise_to_bytes() {
+        let mut b = Buf::new();
+        let x = Weights {
+            rows: 1,
+            cols: 3,
+            w: &[0.0, 1.0, 5.0],
+            lo: 0.0,
+            hi: 2.0,
+            labels: &[Some(4)],
+            theta: &[0.0],
+        };
+        weights(&mut b, &x);
+        let bytes = b.take();
+        assert_eq!(
+            records(&bytes)[0].1,
+            &[1, 0, 3, 0, 0, 127, 255, 4, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn result_layout() {
+        let mut b = Buf::new();
+        let r = Result {
+            seq: 1,
+            winner: Some(2),
+            predicted: None,
+            correct: false,
+            learn: true,
+            running_accuracy: 0.25,
+            spikes: &[0, 1, 2, 3],
+            theta: &[0.0; 4],
+            labels: &[Some(1), None, Some(3), None],
+        };
+        result(&mut b, &r);
+        let bytes = b.take();
+        let p = records(&bytes)[0].1;
+        assert_eq!(p.len(), 4 + 2 + 3 + 4 + 8 + 16 + 4);
+        assert_eq!(&p[p.len() - 4..], &[1, 255, 3, 255]);
     }
 }

@@ -5,8 +5,8 @@ pub mod layer;
 pub mod neuron;
 pub mod params;
 pub mod stdp;
+pub mod tap;
 pub mod train;
-pub mod viz;
 
 pub use layer::{Layer, Observer, Outcome, Step};
 pub use neuron::Neuron;

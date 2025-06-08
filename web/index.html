@@ -116,7 +116,7 @@ th:first-child, td:first-child { text-align: left; }
   <main>
     <div class="col">
       <div>
-        <div class="k" style="padding-bottom:6px">Neuron model · LIF</div>
+        <div class="k" style="padding-bottom:6px" id="model-title"></div>
         <div class="rows" id="model"></div>
       </div>
       <div>
@@ -175,7 +175,7 @@ const NONE = 255;
 
 // ---- state -------------------------------------------------------------------------------
 const S = {
-  meta: null, nIn: 0, nOut: 0, T: 200, side: 28,
+  meta: null, nIn: 0, nOut: 0, T: 200, side: 28, params: [], paramTitle: "", pops: [], floor: -Infinity,
   img: null, label: -1, learn: true, t: 0, winner: -1, lastWinner: -1,
   th: null, pot: null, peak: null, trace: null, spk: null, inGlow: null, outGlow: null, inSpikes: 0, outSpikes: 0,
   weights: null, labels: null, theta: null, result: null,
@@ -186,21 +186,53 @@ const S = {
 const probe = () => (S.pinned >= 0 ? S.pinned : S.winner >= 0 ? S.winner : Math.max(0, S.lastWinner));
 const dirty = (...k) => k.forEach((x) => S.dirty.add(x));
 
-// ---- protocol (see src/viz/frame.rs) ------------------------------------------------------
+// ---- protocol (see crates/snn-live/src/frame.rs) ------------------------------------------
+const TD = new TextDecoder();
+// a u16-length-prefixed string at p, and the offset after it
+const str = (v, p) => { const n = v.getUint16(p, true); return [TD.decode(new Uint8Array(v.buffer, v.byteOffset + p + 2, n)), p + 2 + n]; };
+
 const H = {
   1(v, p) { // META
-    const m = { w: v.getUint16(p, true), h: v.getUint16(p + 2, true), nOut: v.getUint16(p + 4, true), T: v.getUint16(p + 6, true),
-      classes: v.getUint8(p + 8), nTrain: v.getUint32(p + 9, true), nTest: v.getUint32(p + 13, true), epochs: v.getUint16(p + 17, true),
-      wMin: v.getFloat32(p + 19, true), wMax: v.getFloat32(p + 23, true), rest: v.getFloat32(p + 27, true), floor: v.getFloat32(p + 31, true),
-      leak: v.getFloat32(p + 35, true), tRef: v.getUint16(p + 39, true), div: v.getFloat32(p + 41, true), sigma: v.getFloat32(p + 45, true) };
-    const n = v.getUint16(p + 49, true);
-    m.name = new TextDecoder().decode(new Uint8Array(v.buffer, v.byteOffset + p + 51, n));
-    S.meta = m; S.nIn = m.w * m.h; S.nOut = m.nOut; S.T = m.T; S.side = m.w;
-    S.th = new Float32Array(m.nOut).fill(1); S.pot = new Float32Array(m.nOut); S.peak = new Float32Array(m.nOut);
-    S.trace = new Float32Array((m.T + 1) * m.nOut); S.spk = new Uint8Array((m.T + 1) * m.nOut); S.inGlow = new Float32Array(S.nIn); S.outGlow = new Float32Array(m.nOut);
-    S.labels = new Uint8Array(m.nOut).fill(NONE); S.theta = new Float32Array(m.nOut); S.img = new Uint8Array(S.nIn);
-    S.ring = new Array(m.T * 3).fill(null); S.ringAt = 0; S.acc = []; S.tests = []; S.epochs = [];
-    renderModel(); renderEpochs(); dirty("all");
+    const m = { w: v.getUint16(p, true), h: v.getUint16(p + 2, true), classes: v.getUint8(p + 4), nTrain: v.getUint32(p + 5, true),
+      nTest: v.getUint32(p + 9, true), epochs: v.getUint16(p + 13, true), T: v.getUint16(p + 15, true), dt: v.getFloat32(p + 17, true) };
+    let o;
+    [m.model, o] = str(v, p + 21);
+    [m.name] = str(v, o);
+    S.meta = m; S.nIn = m.w * m.h; S.T = m.T; S.side = m.w; S.img = new Uint8Array(S.nIn);
+    S.acc = []; S.tests = []; S.epochs = [];
+    renderEpochs(); dirty("all");
+  },
+  11(v, p) { // PARAMS
+    let o, n;
+    [S.paramTitle, o] = str(v, p);
+    n = v.getUint8(o++);
+    S.params = [];
+    for (let k = 0; k < n; k++) {
+      const q = {};
+      [q.name, o] = str(v, o); q.value = v.getFloat32(o, true); [q.text, o] = str(v, o + 4); [q.unit, o] = str(v, o);
+      S.params.push(q);
+    }
+    const floor = S.params.find((q) => q.name === "Floor");
+    S.floor = floor ? floor.value : -Infinity;
+    renderModel();
+  },
+  12(v, p) { // POPS
+    const n = v.getUint8(p);
+    let o = p + 1;
+    S.pops = [];
+    for (let k = 0; k < n; k++) {
+      const q = {};
+      [q.name, o] = str(v, o);
+      q.size = v.getUint16(o, true); q.w = v.getUint16(o + 2, true); q.h = v.getUint16(o + 4, true); q.role = v.getUint8(o + 6); o += 7;
+      S.pops.push(q);
+    }
+    const out = S.pops.find((q) => q.role === 5), N = out ? out.size : 0, T = S.T;
+    S.nOut = N;
+    S.th = new Float32Array(N).fill(1); S.pot = new Float32Array(N); S.peak = new Float32Array(N);
+    S.trace = new Float32Array((T + 1) * N); S.spk = new Uint8Array((T + 1) * N); S.inGlow = new Float32Array(S.nIn); S.outGlow = new Float32Array(N);
+    S.labels = new Uint8Array(N).fill(NONE); S.theta = new Float32Array(N);
+    S.ring = new Array(T * 3).fill(null); S.ringAt = 0;
+    dirty("all");
   },
   2(v, p) { // IMAGE
     S.label = v.getUint8(p + 14); S.learn = v.getUint8(p + 15) === 1;
@@ -275,9 +307,10 @@ const H = {
     dirty("stats");
   },
   10(v, p) { // HISTORY
-    const n = v.getUint32(p, true);
+    if (v.getUint8(p) !== 0) return;
+    const n = v.getUint32(p + 1, true);
     S.acc = [];
-    for (let i = 0; i < n; i++) S.acc.push([v.getUint32(p + 4 + 8 * i, true), v.getFloat32(p + 8 + 8 * i, true)]);
+    for (let i = 0; i < n; i++) S.acc.push([v.getUint32(p + 5 + 8 * i, true), v.getFloat32(p + 9 + 8 * i, true)]);
     dirty("acc");
   },
 };
@@ -303,9 +336,8 @@ const send = (cmd) => ws && ws.readyState === 1 && ws.send(cmd);
 
 // ---- DOM panels ---------------------------------------------------------------------------
 function renderModel() {
-  const m = S.meta;
-  const rows = [["Threshold", (m.div === 1 ? "" : `÷${m.div} `) + "adaptive", ""], ["Leak", m.leak.toFixed(2), "/ms"], ["Refractory", m.tRef, "ms"],
-    ["Floor", m.floor.toFixed(0), ""], ["Weights", `${m.wMin}–${m.wMax}`, ""], ["Learning rate", +m.sigma.toPrecision(3), ""]];
+  $("model-title").textContent = S.paramTitle;
+  const rows = S.params.map((q) => [q.name, q.text || +q.value.toPrecision(3), q.unit]);
   const box = $("model");
   box.replaceChildren(...rows.map(([k, val, u]) => {
     const d = document.createElement("div"), a = document.createElement("span"), b = document.createElement("span");
@@ -372,7 +404,7 @@ function renderProbe() {
   const lab = S.labels[j];
   $("probe-v").textContent = `N${String(j).padStart(2, "0")}` + (lab === NONE ? "" : ` · ${lab}`);
   const p = S.pot[j];
-  $("vm-v").textContent = p <= S.meta.floor + 1 ? "inhib" : p.toFixed(1);
+  $("vm-v").textContent = p <= S.floor + 1 ? "inhib" : p.toFixed(1);
   $("vth-v").textContent = S.th[j].toFixed(1);
   $("theta-v").textContent = (S.theta[j] >= 0 ? "+" : "") + S.theta[j].toFixed(2);
 }
@@ -465,7 +497,7 @@ function drawNet() {
     }
   }
 
-  const floor = S.meta.floor + 1;
+  const floor = S.floor + 1;
   for (let j = 0; j < N; j++) {
     const [cx, cy] = nodes[j], gl = S.outGlow[j], p = S.pot[j];
     if (gl > 0.03) {
@@ -550,7 +582,7 @@ function drawTrace() {
   x.setLineDash([4, 4]); x.strokeStyle = pa(0.5); x.lineWidth = 1;
   x.beginPath(); x.moveTo(0, Y(th)); x.lineTo(w, Y(th)); x.stroke(); x.setLineDash([]);
   x.fillStyle = G.p; x.font = `600 10px ${FH}`; x.textAlign = "right"; x.fillText("V_TH", w - 6, Y(th) - 4);
-  const floor = S.meta.floor + 1;
+  const floor = S.floor + 1;
   x.strokeStyle = G[3]; x.lineWidth = 1.5; x.beginPath();
   for (let t = 1; t <= S.t; t++) {
     const v = S.trace[t * S.nOut + j], px = X(t), spiked = S.spk[t * S.nOut + j];

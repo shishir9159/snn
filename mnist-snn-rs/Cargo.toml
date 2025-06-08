@@ -13,4 +13,4 @@ path = "src/main.rs"
 
 [dependencies]
 snn-core.workspace = true
-tungstenite.workspace = true
+snn-live.workspace = true

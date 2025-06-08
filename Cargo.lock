@@ -212,7 +212,7 @@ name = "mnist-snn-rs"
 version = "0.1.0"
 dependencies = [
  "snn-core",
- "tungstenite",
+ "snn-live",
 ]
 
 [[package]]
@@ -322,6 +322,14 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "image",
+]
+
+[[package]]
+name = "snn-live"
+version = "0.1.0"
+dependencies = [
+ "snn-core",
+ "tungstenite",
 ]
 
 [[package]]
