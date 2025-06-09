@@ -28,10 +28,25 @@ const FONTS: [(&str, &[u8]); 4] = [
     font!("barlow-condensed-600"),
 ];
 
+macro_rules! view {
+    ($name:literal) => {
+        (
+            concat!("/views/", $name, ".js"),
+            include_str!(concat!("../../../web/views/", $name, ".js")),
+        )
+    };
+}
+
+/// One script per model, picked by the dashboard from META.
+const VIEWS: [(&str, &str); 1] = [view!("wta")];
+
 /// Files compiled into the binary, by request path.
 fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
     if path == "/" || path == "/index.html" {
         return Some(("text/html; charset=utf-8", INDEX.as_bytes()));
+    }
+    if let Some((_, js)) = VIEWS.iter().find(|(p, _)| *p == path) {
+        return Some(("text/javascript; charset=utf-8", js.as_bytes()));
     }
     FONTS
         .iter()
@@ -187,6 +202,8 @@ mod tests {
         assert!(page.contains("text/html"));
         assert!(page.contains("<html"));
         assert!(get(addr, "/missing").starts_with("HTTP/1.1 404"));
+        let view = get(addr, "/views/wta.js");
+        assert!(view.contains("text/javascript") && view.contains("registerView"));
         let font = get(addr, "/fonts/barlow-400.woff2");
         assert!(font.contains("font/woff2") && font.contains("wOF2"));
     }
