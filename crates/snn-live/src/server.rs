@@ -155,7 +155,8 @@ fn session(stream: TcpStream, hub: &Hub, ctl: &Control) -> io::Result<()> {
     }
 }
 
-/// Applies `pause`, `run` or `speed <steps per second>` from a viewer.
+/// Applies `pause`, `run`, `speed <steps per second>` or `probe <pop> <unit>`
+/// (`probe auto` to clear) from a viewer.
 fn command(cmd: &str, hub: &Hub, ctl: &Control) {
     let mut it = cmd.split_whitespace();
     match (it.next(), it.next()) {
@@ -165,6 +166,13 @@ fn command(cmd: &str, hub: &Hub, ctl: &Control) {
             Ok(v) => ctl.set_speed(v),
             Err(_) => return,
         },
+        (Some("probe"), Some("auto")) => return ctl.set_probe(None),
+        (Some("probe"), Some(pop)) => {
+            if let (Ok(pop), Some(Ok(unit))) = (pop.parse(), it.next().map(str::parse)) {
+                ctl.set_probe(Some((pop, unit)));
+            }
+            return;
+        }
         _ => return,
     }
     publish_state(hub, ctl);
@@ -226,6 +234,12 @@ mod tests {
         ws.send(Message::text("speed 5000")).unwrap();
         ws.read().unwrap();
         assert_eq!(ctl.speed(), 5000);
+
+        ws.send(Message::text("probe 2 17")).unwrap();
+        ws.send(Message::text("probe 1")).unwrap();
+        ws.send(Message::text("speed 6000")).unwrap();
+        ws.read().unwrap();
+        assert_eq!(ctl.probe(), Some((2, 17)));
 
         hub.publish(vec![frame::EPOCH, 0, 0, 0, 0]);
         assert_eq!(ws.read().unwrap().into_data()[0], frame::EPOCH);

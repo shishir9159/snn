@@ -1,4 +1,5 @@
-//! Run control shared with other threads (pause, speed, stop) and step pacing.
+//! Run control shared with other threads (pause, speed, stop, probed neuron)
+//! and step pacing.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -14,7 +15,11 @@ pub struct Control {
     speed: AtomicU32,
     stop: AtomicBool,
     done: AtomicBool,
+    /// neuron a viewer asked to watch, population << 16 | unit; NO_PROBE for automatic
+    probe: AtomicU32,
 }
+
+const NO_PROBE: u32 = u32::MAX;
 
 impl Control {
     pub fn new(speed: u32) -> Self {
@@ -25,6 +30,7 @@ impl Control {
             speed: AtomicU32::new(speed),
             stop: AtomicBool::new(false),
             done: AtomicBool::new(false),
+            probe: AtomicU32::new(NO_PROBE),
         }
     }
 
@@ -62,6 +68,20 @@ impl Control {
 
     pub fn is_done(&self) -> bool {
         self.done.load(Ordering::Relaxed)
+    }
+
+    /// Asks the model to report one neuron in detail; None lets it choose.
+    pub fn set_probe(&self, probe: Option<(usize, usize)>) {
+        let v = probe.map_or(NO_PROBE, |(pop, unit)| {
+            (pop as u32) << 16 | unit as u32 & 0xffff
+        });
+        self.probe.store(v, Ordering::Relaxed);
+    }
+
+    /// The requested (population, unit), if a viewer picked one.
+    pub fn probe(&self) -> Option<(usize, usize)> {
+        let v = self.probe.load(Ordering::Relaxed);
+        (v != NO_PROBE).then_some(((v >> 16) as usize, (v & 0xffff) as usize))
     }
 
     /// Blocks while paused; returns how long it waited.
@@ -140,6 +160,16 @@ mod tests {
         }
         let dt = t0.elapsed().as_secs_f32();
         assert!((0.08..0.3).contains(&dt), "200 steps at 2000/s took {dt}s");
+    }
+
+    #[test]
+    fn probe_round_trips() {
+        let ctl = Control::new(0);
+        assert_eq!(ctl.probe(), None);
+        ctl.set_probe(Some((2, 513)));
+        assert_eq!(ctl.probe(), Some((2, 513)));
+        ctl.set_probe(None);
+        assert_eq!(ctl.probe(), None);
     }
 
     #[test]

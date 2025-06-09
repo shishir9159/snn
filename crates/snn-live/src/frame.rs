@@ -14,6 +14,12 @@ pub const PROGRESS: u8 = 8;
 pub const HISTORY: u8 = 10;
 pub const PARAMS: u8 = 11;
 pub const POPS: u8 = 12;
+pub const SERIES: u8 = 16;
+pub const SPIKES: u8 = 17;
+pub const PROBE: u8 = 18;
+pub const OUTCOME: u8 = 19;
+pub const FIELDS: u8 = 20;
+pub const MAP: u8 = 21;
 
 /// Record writer. `begin`/`end` bracket a record and patch in its length.
 #[derive(Debug, Default)]
@@ -304,6 +310,128 @@ pub fn history(b: &mut Buf, series: u8, points: &[(u32, f32)]) {
     b.end();
 }
 
+/// Names of the per-step scalars, the probe's variables and the per-image scalars
+/// that SPIKES and OUTCOME carry.
+pub fn series(b: &mut Buf, step: &[&str], probe: &[&str], image: &[&str]) {
+    b.begin(SERIES);
+    for names in [step, probe, image] {
+        b.u8(names.len() as u8);
+        names.iter().for_each(|n| b.str(n));
+    }
+    b.end();
+}
+
+/// One step inside an open SPIKES record: per population the units that spiked,
+/// then the step scalars and the probed neuron's variables.
+pub fn spikes_step(b: &mut Buf, pops: &[&[u16]], scalars: &[f32], probe: &[f32]) {
+    for units in pops {
+        b.u16(units.len() as u16);
+        units.iter().for_each(|&i| b.u16(i));
+    }
+    scalars.iter().for_each(|&v| b.f32(v));
+    probe.iter().for_each(|&v| b.f32(v));
+}
+
+/// The neuron the probe variables belong to, and its firing threshold.
+pub fn probe(b: &mut Buf, pop: usize, unit: usize, threshold: f32) {
+    b.begin(PROBE);
+    b.u8(pop as u8);
+    b.u16(unit as u16);
+    b.f32(threshold);
+    b.end();
+}
+
+/// How a presentation ended.
+pub struct Outcome<'a> {
+    pub seq: u32,
+    pub predicted: Option<u8>,
+    pub correct: bool,
+    pub learn: bool,
+    pub running_accuracy: f32,
+    /// evidence per class, any scale
+    pub scores: &'a [f32],
+    /// spikes per population
+    pub spikes: &'a [u32],
+    /// per-image scalars, raw and smoothed over recent images
+    pub scalars: &'a [f32],
+    pub smoothed: &'a [f32],
+}
+
+pub fn outcome(b: &mut Buf, o: &Outcome) {
+    b.begin(OUTCOME);
+    b.u32(o.seq);
+    b.u8(o.predicted.unwrap_or(255));
+    b.u8(o.correct as u8);
+    b.u8(o.learn as u8);
+    b.f32(o.running_accuracy);
+    for list in [o.scores, o.scalars, o.smoothed] {
+        b.u8(list.len() as u8);
+        list.iter().for_each(|&v| b.f32(v));
+    }
+    b.u8(o.spikes.len() as u8);
+    o.spikes.iter().for_each(|&s| b.u32(s));
+    b.end();
+}
+
+/// Byte for `v` on a scale of ±`scale` (signed, 128 is zero) or 0..`scale`.
+fn quantise(v: f32, scale: f32, signed: bool) -> u8 {
+    let s = scale.max(f32::MIN_POSITIVE);
+    if signed {
+        (128.0 + v / s * 127.0).round().clamp(1.0, 255.0) as u8
+    } else {
+        (v / s * 255.0).round().clamp(0.0, 255.0) as u8
+    }
+}
+
+/// Weight images of some units of one population, e.g. receptive fields.
+pub struct Fields<'a> {
+    pub title: &'a str,
+    /// population the units belong to, for click-to-probe
+    pub pop: usize,
+    pub w: usize,
+    pub h: usize,
+    /// images per unit, e.g. 2 for ON/OFF
+    pub channels: usize,
+    pub units: &'a [u16],
+    pub labels: &'a [Option<u8>],
+    /// one number per tile, shown as a bar
+    pub values: &'a [f32],
+    /// tile by tile, channel by channel, row-major
+    pub data: &'a [f32],
+}
+
+/// Fields quantised around zero to the largest magnitude.
+pub fn fields(b: &mut Buf, f: &Fields) {
+    let scale = f.data.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    b.begin(FIELDS);
+    b.str(f.title);
+    b.u8(f.pop as u8);
+    b.u16(f.units.len() as u16);
+    b.u16(f.w as u16);
+    b.u16(f.h as u16);
+    b.u8(f.channels as u8);
+    b.f32(scale);
+    for k in 0..f.units.len() {
+        b.u16(f.units[k]);
+        b.u8(f.labels[k].unwrap_or(255));
+        b.f32(f.values[k]);
+    }
+    f.data.iter().for_each(|&v| b.u8(quantise(v, scale, true)));
+    b.end();
+}
+
+/// A named image the view draws, e.g. the network's prediction of the input.
+pub fn map(b: &mut Buf, id: u8, w: usize, h: usize, signed: bool, scale: f32, data: &[f32]) {
+    b.begin(MAP);
+    b.u8(id);
+    b.u16(w as u16);
+    b.u16(h as u16);
+    b.u8(signed as u8);
+    b.f32(scale);
+    data.iter().for_each(|&v| b.u8(quantise(v, scale, signed)));
+    b.end();
+}
+
 /// Splits a packet into (kind, payload) records.
 pub fn records(bytes: &[u8]) -> Vec<(u8, &[u8])> {
     let mut out = Vec::new();
@@ -403,6 +531,70 @@ mod tests {
         let r = records(&bytes);
         assert_eq!(r[0].1[..5], [1, 1, 0, 0, 0]);
         assert_eq!(r[0].1.len(), 1 + 4 + 8);
+    }
+
+    #[test]
+    fn spikes_step_layout() {
+        let mut b = Buf::new();
+        let at = steps_begin(&mut b, SPIKES, 1);
+        spikes_step(&mut b, &[&[3, 9], &[]], &[0.5], &[1.0, 2.0]);
+        b.patch_u16(at, 1);
+        b.end();
+        let bytes = b.take();
+        let p = records(&bytes)[0].1;
+        assert_eq!(&p[..10], &[1, 0, 1, 0, 2, 0, 3, 0, 9, 0]);
+        assert_eq!(&p[10..12], &[0, 0]);
+        assert_eq!(p.len(), 12 + 4 + 8);
+    }
+
+    #[test]
+    fn fields_quantise_around_zero() {
+        let mut b = Buf::new();
+        let f = Fields {
+            title: "W",
+            pop: 2,
+            w: 2,
+            h: 1,
+            channels: 1,
+            units: &[7],
+            labels: &[None],
+            values: &[0.5],
+            data: &[-2.0, 1.0],
+        };
+        fields(&mut b, &f);
+        let bytes = b.take();
+        let p = records(&bytes)[0].1;
+        // title, pop, n, w, h, channels, scale, then unit 7, no label, value
+        assert_eq!(&p[..11], &[1, 0, b'W', 2, 1, 0, 2, 0, 1, 0, 1]);
+        assert_eq!(f32::from_le_bytes(p[11..15].try_into().unwrap()), 2.0);
+        assert_eq!(&p[15..18], &[7, 0, 255]);
+        assert_eq!(&p[22..], &[1, 192]);
+    }
+
+    #[test]
+    fn outcome_and_map_layout() {
+        let mut b = Buf::new();
+        let o = Outcome {
+            seq: 3,
+            predicted: Some(4),
+            correct: true,
+            learn: false,
+            running_accuracy: 0.5,
+            scores: &[1.0, 2.0],
+            spikes: &[10, 20, 30],
+            scalars: &[0.1],
+            smoothed: &[0.2],
+        };
+        outcome(&mut b, &o);
+        map(&mut b, 1, 2, 1, false, 2.0, &[1.0, 4.0]);
+        let bytes = b.take();
+        let r = records(&bytes);
+        assert_eq!(
+            r[0].1.len(),
+            4 + 3 + 4 + (1 + 8) + (1 + 4) + (1 + 4) + (1 + 12)
+        );
+        assert_eq!(&r[0].1[4..7], &[4, 1, 0]);
+        assert_eq!(r[1].1, &[1, 2, 0, 1, 0, 0, 0, 0, 0, 64, 128, 255]);
     }
 
     #[test]
