@@ -108,6 +108,7 @@ th:first-child, td:first-child { text-align: left; }
     <div class="stat"><span class="k">Image</span><span class="num" id="image-v">–</span></div>
     <div class="stat"><span class="k">Sim time</span><span class="num" id="clock-v">–</span></div>
     <div class="stat"><span class="k">Images / s</span><span class="num" id="ips-v">–</span></div>
+    <div id="xstats" style="display:contents"></div>
     <div class="spacer"></div>
     <div class="seg" id="speed" role="radiogroup" aria-label="Simulation speed"></div>
     <button class="btn" id="toggle" disabled>Pause</button>
@@ -176,7 +177,7 @@ const H = {
     S.meta = m; S.nIn = m.w * m.h; S.T = m.T; S.side = m.w; S.img = new Uint8Array(S.nIn);
     if (VIEWS[m.model] !== view) {
       view = VIEWS[m.model];
-      for (const id of ["firing", "center", "right", "bottom"]) $(id).replaceChildren();
+      for (const id of ["firing", "center", "right", "bottom", "xstats"]) $(id).replaceChildren();
       if (view) { view.layout(); corners(document); }
     }
     S.acc = []; S.tests = []; S.epochs = [];
@@ -237,11 +238,9 @@ const H = {
     dirty("stats");
   },
   10(v, p) { // HISTORY
-    if (v.getUint8(p) !== 0) return;
-    const n = v.getUint32(p + 1, true);
-    S.acc = [];
-    for (let i = 0; i < n; i++) S.acc.push([v.getUint32(p + 5 + 8 * i, true), v.getFloat32(p + 9 + 8 * i, true)]);
-    dirty("acc");
+    const series = v.getUint8(p), n = v.getUint32(p + 1, true), pts = [];
+    for (let i = 0; i < n; i++) pts.push([v.getUint32(p + 5 + 8 * i, true), v.getFloat32(p + 9 + 8 * i, true)]);
+    if (series === 0) { S.acc = pts; dirty("acc"); } else if (view && view.history) view.history(series, pts);
   },
 };
 
@@ -416,6 +415,7 @@ function frame(now) {
 addEventListener("resize", () => dirty("all"));
 renderControls();
 </script>
+<script src="/views/pop.js"></script>
 <script src="/views/wta.js"></script>
 <script>connect(); requestAnimationFrame(frame);</script>
 </body>
