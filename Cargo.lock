@@ -216,6 +216,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mnist-spncn-rs"
+version = "0.1.0"
+dependencies = [
+ "snn-core",
+ "snn-live",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,12 @@
+[package]
+name = "mnist-spncn-rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "mnist_spncn"
+
+[dependencies]
+snn-core.workspace = true
+snn-live.workspace = true
