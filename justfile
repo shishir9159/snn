@@ -5,6 +5,10 @@ mirror := "https://storage.googleapis.com/cvdf-datasets/mnist"
 mnist-snn-rs *args: mnist
     cargo run --release -p mnist-snn-rs -- --mnist {{data}} {{args}}
 
+# spiking predictive coding (SpNCN) on MNIST, live view at http://127.0.0.1:7878
+mnist-spncn-rs *args: mnist
+    cargo run --release -p mnist-spncn-rs -- --mnist {{data}} {{args}}
+
 # fetch the MNIST idx files, skipping ones already present
 mnist:
     mkdir -p {{data}}

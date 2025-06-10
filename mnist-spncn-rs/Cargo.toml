@@ -10,3 +10,7 @@ name = "mnist_spncn"
 [dependencies]
 snn-core.workspace = true
 snn-live.workspace = true
+
+[[bin]]
+name = "mnist-spncn-rs"
+path = "src/main.rs"

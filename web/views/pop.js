@@ -139,6 +139,7 @@ function popView(model) {
       o.scores = list(); o.scalars = list(); o.smoothed = list();
       const ns = v.getUint8(q++); o.spikes = [];
       for (let i = 0; i < ns; i++, q += 4) o.spikes.push(v.getUint32(q, true));
+      o.label = S.label;
       P.outcome = o;
       o.smoothed.forEach((m, i) => { const el = $(`x${i}-v`); if (el) el.textContent = fmtNum(m); });
       const n = S.progress ? S.progress.images : 0, last = P.metric[P.metric.length - 1];
@@ -234,7 +235,8 @@ function popView(model) {
     const o = P.outcome, live = argmax(P.live);
     const pred = o ? o.predicted : live;
     $("digit-v").textContent = pred === NONE || pred < 0 ? "–" : pred;
-    $("truth-v").textContent = S.label >= 0 ? `label ${S.label}` + (S.learn ? "" : " · test") : "";
+    const label = o ? o.label : S.label;
+    $("truth-v").textContent = label >= 0 ? `label ${label}` + (S.learn ? "" : " · test") : "";
     const b = $("badge-v");
     if (o) { b.className = "badge " + (o.correct ? "ok" : "miss"); b.textContent = o.correct ? "✓ correct" : o.predicted === NONE ? "✗ no answer" : "✗ wrong"; }
     else { b.className = "badge"; b.textContent = ""; }
@@ -254,7 +256,8 @@ function popView(model) {
     for (let c = 0; c < C; c++) {
       const cx = band * c + band / 2, bh = ((ev[c] - lo) / (hi - lo)) * (base - 4);
       if (bh > 0.5) { x.fillStyle = c === pred ? G[2] : G[6]; x.fillRect(cx - bw / 2, base - bh, bw, bh); }
-      x.font = `${c === S.label ? 600 : 400} 13px ${FH}`; x.textAlign = "center"; x.fillStyle = c === S.label ? G.p : G[2];
+      const label = o ? o.label : S.label;
+      x.font = `${c === label ? 600 : 400} 13px ${FH}`; x.textAlign = "center"; x.fillStyle = c === label ? G.p : G[2];
       x.fillText(c, cx, h - 3);
     }
   }
@@ -409,7 +412,9 @@ function popView(model) {
       if (model.pops) model.pops(P);
     },
     image() {
-      P.count.fill(0); P.t = 0; P.outcome = null;
+      // without live label spikes the last decision stays up until the next one
+      P.count.fill(0); P.t = 0;
+      if (P.live) P.outcome = null;
       if (P.live) P.live.fill(0);
       if (P.ptrace) { P.ptrace.fill(0); P.pspk.fill(0); P.strace.fill(0); }
       P.ring[P.ringAt] = { mark: S.label };
