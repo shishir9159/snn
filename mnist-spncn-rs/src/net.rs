@@ -33,6 +33,8 @@ pub struct Net {
     pub err: Vec<Vec<f32>>,
     /// mean squared error of each layer in `err` this step
     pub energy: Vec<f32>,
+    /// mean squared input trace this step, what the input error would be unexplained
+    pub input_energy: f32,
     drive: Vec<f32>,
 }
 
@@ -60,6 +62,7 @@ impl Net {
             pred: zeros(),
             err: zeros(),
             energy: vec![0.0; below.len()],
+            input_energy: 0.0,
             drive: vec![0.0; sizes.iter().copied().max().unwrap()],
             sizes,
             p,
@@ -122,6 +125,7 @@ impl Net {
             }
             self.energy[l] = dot(&self.err[l], &self.err[l]) / n as f32;
         }
+        self.input_energy = dot(&self.zx, &self.zx) / self.zx.len() as f32;
     }
 
     // each spike pulls its unit's prediction and error weights along the error below

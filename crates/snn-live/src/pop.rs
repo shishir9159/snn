@@ -80,6 +80,15 @@ impl PopTap {
         }
     }
 
+    /// Adds records to a streamed presentation between steps, e.g. a map every
+    /// few steps.
+    pub fn extra<F: FnOnce(&mut Buf)>(&mut self, f: F) {
+        if self.s.streaming() {
+            self.s.close_steps();
+            f(&mut self.s.buf);
+        }
+    }
+
     /// Ends a presentation. `streamed` adds records (e.g. maps) to a streamed one;
     /// `fields` writes FIELDS records when they are due.
     pub fn end_image<S, F>(&mut self, info: &ImageInfo, e: &End, streamed: S, fields: F)

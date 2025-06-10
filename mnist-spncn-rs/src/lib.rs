@@ -6,6 +6,8 @@ pub mod lif;
 pub mod net;
 pub mod params;
 pub mod readout;
+pub mod tap;
+pub mod train;
 
 pub use net::Net;
 pub use params::Params;

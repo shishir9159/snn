@@ -50,6 +50,13 @@ impl Readout {
     pub fn classes(&self) -> usize {
         self.classes
     }
+
+    /// Class that feature `k` speaks for most, if it speaks for any.
+    pub fn favourite(&self, k: usize) -> Option<u8> {
+        let w = (0..self.classes).map(|c| self.w[c * (self.n + 1) + k]);
+        let (c, v) = w.enumerate().max_by(|a, b| a.1.total_cmp(&b.1))?;
+        (v > 0.0).then_some(c as u8)
+    }
 }
 
 /// Index of the largest value.
