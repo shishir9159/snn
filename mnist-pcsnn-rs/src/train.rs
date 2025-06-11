@@ -8,6 +8,8 @@ use std::time::Instant;
 
 /// Images in the running-accuracy window.
 const RECENT: usize = 500;
+/// Paced steps each inference iteration is given, so it can be watched.
+const HOLD: usize = 8;
 
 /// Units of one layer bucketed by spike time, so a replay finds each step's spikes.
 #[derive(Debug, Clone, Default)]
@@ -70,6 +72,8 @@ pub trait Monitor {
     fn image_start(&mut self, _info: &ImageInfo, _pixels: &[u8], _net: &Net) {}
     /// Step `t` replays spike time `t - 1`.
     fn step(&mut self, _t: usize, _net: &Net, _s: &Spikes) {}
+    /// Inference has settled; weights are not updated yet.
+    fn inferred(&mut self, _net: &Net) {}
     fn image_end(&mut self, _r: &ImageResult, _net: &Net) {}
     fn epoch_end(&mut self, _e: &EpochResult) {}
 }
@@ -84,6 +88,10 @@ impl<A: Monitor, B: Monitor> Monitor for (A, B) {
     fn step(&mut self, t: usize, net: &Net, s: &Spikes) {
         self.0.step(t, net, s);
         self.1.step(t, net, s);
+    }
+    fn inferred(&mut self, net: &Net) {
+        self.0.inferred(net);
+        self.1.inferred(net);
     }
     fn image_end(&mut self, r: &ImageResult, net: &Net) {
         self.0.image_end(r, net);
@@ -166,6 +174,10 @@ impl Trainer {
         let correct = predicted == Some(info.label);
         if info.learn {
             net.infer(info.label);
+            mon.inferred(net);
+            for _ in 0..net.p.iterations * HOLD {
+                self.pacer.tick(ctl);
+            }
             net.learn();
             net.revive(&mut self.rng);
             self.recent.push(correct);

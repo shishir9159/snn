@@ -14,9 +14,9 @@ pub const INFER: u8 = 48;
 /// Fields shown, busiest hidden neurons first.
 const FIELDS: usize = 100;
 
-/// Free energy per iteration, then per hidden neuron its forward and inferred
-/// time and whether dropout silenced it, then per output its forward, predicted
-/// and target time.
+/// Free energy per iteration; per hidden neuron its forward and inferred time
+/// and whether dropout silenced it; the hidden times at every iteration; then
+/// per output its forward, predicted and target time.
 pub fn infer(b: &mut Buf, net: &Net) {
     b.begin(INFER);
     b.u8(net.energy.len() as u8);
@@ -27,6 +27,7 @@ pub fn infer(b: &mut Buf, net: &Net) {
         b.f32(net.hid[j]);
         b.u8(net.dropped[j] as u8);
     }
+    net.trail.iter().for_each(|&t| b.f32(t));
     b.u8(net.classes as u8);
     for k in 0..net.classes {
         b.f32(net.out_fwd[k]);
@@ -157,6 +158,13 @@ impl Monitor for Tap {
             .step(t, &[s.input, s.hidden, s.output], &[share], &[self.v]);
     }
 
+    fn inferred(&mut self, net: &Net) {
+        if self.t.streaming() {
+            self.t.extra(|b| infer(b, net));
+            self.t.s.flush();
+        }
+    }
+
     fn image_end(&mut self, r: &ImageResult, net: &Net) {
         for (u, &t) in self.usage.iter_mut().zip(&net.hid_pred) {
             *u = 0.995 * *u + (t < net.p.t_max) as u8 as f32;
@@ -176,16 +184,10 @@ impl Monitor for Tap {
             spikes: &self.counts,
             scalars: &[free, r.first_spike],
         };
-        let learn = r.info.learn;
-        let streamed = |b: &mut Buf| {
-            if learn {
-                infer(b, net);
-            }
-        };
         let mut fields = Buf::new();
         self.fields(&mut fields, net);
         let fields = fields.take();
-        self.t.end_image(&r.info, &e, streamed, |b| b.raw(&fields));
+        self.t.end_image(&r.info, &e, |_| {}, |b| b.raw(&fields));
     }
 
     fn epoch_end(&mut self, e: &EpochResult) {
@@ -225,8 +227,11 @@ mod tests {
         assert!(count(frame::IMAGE) >= 1);
         assert_eq!(count(INFER), count(frame::IMAGE));
         assert!(count(frame::SPIKES) >= 1 && count(frame::FIELDS) >= 1);
-        // iterations + 1 energies, 200 hidden of 9 bytes, 10 outputs of 12
+        // 11 energies, 200 hidden of 9 bytes, 11 x 200 trail times, 10 outputs of 12
         let inf = &recs.iter().find(|r| r.0 == INFER).unwrap().1;
-        assert_eq!(inf.len(), 1 + 11 * 4 + 2 + 200 * 9 + 1 + 10 * 12);
+        assert_eq!(
+            inf.len(),
+            1 + 11 * 4 + 2 + 200 * 9 + 11 * 200 * 4 + 1 + 10 * 12
+        );
     }
 }

@@ -35,6 +35,8 @@ pub struct Net {
     pub eps_out: Vec<f32>,
     /// free energy before inference and after each iteration
     pub energy: Vec<f32>,
+    /// hidden times at each iteration, iteration-major
+    pub trail: Vec<f32>,
     /// hidden neurons silenced by dropout for this image
     pub dropped: Vec<bool>,
     /// output threshold for this image: raised when nothing is dropped, so the
@@ -64,6 +66,7 @@ impl Net {
             eps_hid: vec![0.0; h],
             eps_out: vec![0.0; classes],
             energy: Vec::new(),
+            trail: Vec::new(),
             dropped: vec![false; h],
             out_threshold: p.threshold,
             fired: vec![0; h],
@@ -169,6 +172,7 @@ impl Net {
         }
         self.hid.copy_from_slice(&self.hid_pred);
         self.energy.clear();
+        self.trail.clear();
         let into_output = Layer {
             skip: &self.dropped,
             w: &self.w2,
@@ -197,6 +201,7 @@ impl Net {
                 .map(|e| e * e)
                 .sum();
             self.energy.push(0.5 * f);
+            self.trail.extend_from_slice(&self.hid);
             if it == p.iterations {
                 break;
             }
@@ -406,6 +411,7 @@ mod tests {
             assert!(net.target[k] >= (first + net.p.gamma).min(net.p.t_max));
         }
         assert_eq!(net.energy.len(), net.p.iterations + 1);
+        assert_eq!(net.trail.len(), net.energy.len() * net.p.hidden);
         // the hidden layer moved to explain the targets
         assert!(net.hid.iter().zip(&net.hid_pred).any(|(a, b)| a != b));
     }

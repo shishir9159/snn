@@ -425,7 +425,7 @@ function popView(model) {
     history(series, pts) {
       if (series === 1) { P.metric = pts; dirty("metric"); }
     },
-    H,
+    H: Object.assign({}, H, model.H),
     stats() {},
     frame(all) {
       let glowing = false;
