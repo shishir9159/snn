@@ -208,6 +208,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mnist-pcsnn-rs"
+version = "0.1.0"
+dependencies = [
+ "snn-core",
+ "snn-live",
+]
+
+[[package]]
 name = "mnist-snn-rs"
 version = "0.1.0"
 dependencies = [

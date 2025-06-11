@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/snn-core", "crates/snn-live", "mnist-snn-rs", "mnist-spncn-rs"]
+members = ["crates/snn-core", "crates/snn-live", "mnist-snn-rs", "mnist-spncn-rs", "mnist-pcsnn-rs"]
 
 [workspace.package]
 version = "0.1.0"
