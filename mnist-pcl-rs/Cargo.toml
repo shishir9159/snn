@@ -1,0 +1,12 @@
+[package]
+name = "mnist-pcl-rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "mnist_pcl"
+
+[dependencies]
+snn-core.workspace = true
+snn-live.workspace = true

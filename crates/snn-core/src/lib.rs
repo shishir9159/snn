@@ -4,6 +4,7 @@
 pub mod control;
 pub mod dataset;
 pub mod encode;
+pub mod events;
 pub mod rng;
 pub mod run;
 pub mod weights;
