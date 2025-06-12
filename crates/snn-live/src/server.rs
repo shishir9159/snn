@@ -38,7 +38,13 @@ macro_rules! view {
 }
 
 /// One script per model, picked by the dashboard from META.
-const VIEWS: [(&str, &str); 4] = [view!("pop"), view!("wta"), view!("spncn"), view!("pcsnn")];
+const VIEWS: [(&str, &str); 5] = [
+    view!("pop"),
+    view!("wta"),
+    view!("spncn"),
+    view!("pcsnn"),
+    view!("pcl"),
+];
 
 /// Files compiled into the binary, by request path.
 fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {

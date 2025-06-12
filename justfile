@@ -13,6 +13,10 @@ mnist-spncn-rs *args: mnist
 mnist-pcsnn-rs *args: mnist
     cargo run --release -p mnist-pcsnn-rs -- --mnist {{data}} {{args}}
 
+# predictive coding light (PCL) on MNIST saccade events, live view at http://127.0.0.1:7878
+mnist-pcl-rs *args: mnist
+    cargo run --release -p mnist-pcl-rs -- --mnist {{data}} {{args}}
+
 # fetch the MNIST idx files, skipping ones already present
 mnist:
     mkdir -p {{data}}
