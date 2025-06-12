@@ -62,6 +62,12 @@ impl Cells {
         self.v[i]
     }
 
+    /// Potential of cell `i` at step `t` without bringing it up to date.
+    pub fn peek(&self, i: usize, t: u32) -> f32 {
+        let dt = t.saturating_sub(self.seen[i]);
+        self.v[i] * (-(dt as f32) / self.tau).exp()
+    }
+
     fn fire(&mut self, i: usize, t: u32, reset: f32) {
         self.prev[i] = self.last[i];
         self.last[i] = t as i32;

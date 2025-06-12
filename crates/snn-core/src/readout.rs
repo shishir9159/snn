@@ -1,6 +1,7 @@
-//! Online softmax regression from a spike code to a class: the paper fits a
-//! maximum-entropy classifier on rate codes after training; this one learns
-//! alongside, one image at a time, and never touches the network.
+//! Online softmax regression from a spike code to a class, the readout of the
+//! unsupervised models. Papers usually fit such a classifier on spike counts
+//! after training; this one learns alongside, one image at a time, and never
+//! touches the network.
 
 #[derive(Debug, Clone)]
 pub struct Readout {

@@ -1,9 +1,9 @@
 //! Training loop: Poisson-codes each image, runs the network, reads the class
 //! from the spike code and tracks accuracy.
 
-use crate::readout::{argmax, Readout};
 use crate::{Net, Params};
 use snn_core::encode::{Coding, EncodeParams};
+use snn_core::readout::{argmax, Readout};
 use snn_core::{Control, Dataset, EpochResult, ImageInfo, Pacer, Recent, Rng, SpikeTrain};
 use snn_live::app::Printer;
 use std::time::Instant;

@@ -10,3 +10,7 @@ name = "mnist_pcl"
 [dependencies]
 snn-core.workspace = true
 snn-live.workspace = true
+
+[[bin]]
+name = "mnist-pcl-rs"
+path = "src/main.rs"

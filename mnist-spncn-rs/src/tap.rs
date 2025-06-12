@@ -1,9 +1,9 @@
 //! Streams training to the dashboard with the generic population records, plus
 //! the network's prediction of the image every few steps.
 
-use crate::readout::Readout;
 use crate::train::{ImageResult, Monitor};
 use crate::Net;
+use snn_core::Readout;
 use snn_core::{Control, EpochResult, ImageInfo};
 use snn_live::frame::{self, Buf};
 use snn_live::pop::End;
