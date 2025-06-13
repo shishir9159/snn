@@ -77,23 +77,46 @@ impl Events {
                 self.img[(y + s.pad) * side + x + s.pad] = pixels[y * w + x] as f32 / 255.0;
             }
         }
-        // each pixel's log brightness at the last event it sent
+        // only pixels the moving image can light ever change
+        let reach = s.amplitude.ceil() as i32 + 1;
+        let lit = |x: i32, y: i32| {
+            x >= 0 && y >= 0 && (x as usize) < side && (y as usize) < side && {
+                self.img[y as usize * side + x as usize] > 0.0
+            }
+        };
+        let active: Vec<usize> = (0..side * side)
+            .filter(|&i| {
+                let (x, y) = ((i % side) as i32, (i / side) as i32);
+                (x - reach..=x + 1).any(|sx| (y - reach..=y + 1).any(|sy| lit(sx, sy)))
+            })
+            .collect();
+        // brightness each active pixel saw last, its log, and the log at its last event
+        let mut seen: Vec<f32> = active
+            .iter()
+            .map(|&i| self.bright_at(i, (0.0, 0.0)))
+            .collect();
+        let mut log: Vec<f32> = seen.iter().map(|&b| (b + s.floor).ln()).collect();
         let mut level = std::mem::take(&mut self.level);
         level.clear();
-        level.extend((0..side * side).map(|i| self.log_at(i, (0.0, 0.0), s.floor)));
+        level.extend_from_slice(&log);
         self.ids.clear();
         self.start.clear();
         self.start.push(0);
         self.start.push(0);
         for t in 1..=s.steps() {
             let off = s.offset(t);
-            for (i, lv) in level.iter_mut().enumerate() {
-                let d = self.log_at(i, off, s.floor) - *lv;
+            for (a, &i) in active.iter().enumerate() {
+                let b = self.bright_at(i, off);
+                if b != seen[a] {
+                    seen[a] = b;
+                    log[a] = (b + s.floor).ln();
+                }
+                let d = log[a] - level[a];
                 if d >= s.contrast {
-                    *lv += s.contrast;
+                    level[a] += s.contrast;
                     self.ids.push(i as u16);
                 } else if d <= -s.contrast {
-                    *lv -= s.contrast;
+                    level[a] -= s.contrast;
                     self.ids.push((side * side + i) as u16);
                 }
             }
@@ -102,8 +125,8 @@ impl Events {
         self.level = level;
     }
 
-    // log brightness pixel i sees with the image shifted by `off`
-    fn log_at(&self, i: usize, off: (f32, f32), floor: f32) -> f32 {
+    // brightness pixel i sees with the image shifted by `off`, bilinear
+    fn bright_at(&self, i: usize, off: (f32, f32)) -> f32 {
         let side = self.side;
         let (x, y) = ((i % side) as f32 - off.0, (i / side) as f32 - off.1);
         let (x0, y0) = (x.floor(), y.floor());
@@ -117,7 +140,7 @@ impl Events {
         };
         let top = at(x0, y0) * (1.0 - fx) + at(x0 + 1.0, y0) * fx;
         let bottom = at(x0, y0 + 1.0) * (1.0 - fx) + at(x0 + 1.0, y0 + 1.0) * fx;
-        (top * (1.0 - fy) + bottom * fy + floor).ln()
+        top * (1.0 - fy) + bottom * fy
     }
 
     pub fn steps(&self) -> usize {
