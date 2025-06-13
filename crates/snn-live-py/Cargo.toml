@@ -1,0 +1,14 @@
+[package]
+name = "snn-live-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "snn_live_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+snn-core.workspace = true
+snn-live.workspace = true
+pyo3 = { version = "=0.25.0", features = ["extension-module"] }

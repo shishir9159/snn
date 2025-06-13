@@ -67,6 +67,12 @@ impl PopTap {
         self.s.streaming()
     }
 
+    /// Whether the next `end_image` will use its fields, so a model can skip
+    /// building them otherwise.
+    pub fn fields_due(&self) -> bool {
+        (self.s.viewers() && self.last_fields.elapsed() >= FIELDS_GAP) || self.s.resume_due()
+    }
+
     /// One simulated step; only streamed presentations are encoded.
     pub fn step(&mut self, t: usize, spikes: &[&[u16]], scalars: &[f32], probe: &[f32]) {
         self.s.sim_steps += 1;

@@ -23,3 +23,7 @@ mnist:
     for f in train-images-idx3-ubyte train-labels-idx1-ubyte t10k-images-idx3-ubyte t10k-labels-idx1-ubyte; do \
         [ -f {{data}}/$f.gz ] || { curl -#fL --retry 3 -o {{data}}/$f.gz.part {{mirror}}/$f.gz && mv {{data}}/$f.gz.part {{data}}/$f.gz; } || exit 1; \
     done
+
+# build the snn_live Python module into the active virtualenv
+snn-live-py:
+    maturin develop --release -m crates/snn-live-py/Cargo.toml

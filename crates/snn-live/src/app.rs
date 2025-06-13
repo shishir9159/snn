@@ -171,27 +171,44 @@ impl Printer {
     }
 }
 
-/// Serves the dashboard and runs `work` on its own thread until it returns.
-/// `meta` is what every viewer receives first.
+/// Serves the dashboard and runs `work` on its own thread; keeps serving after
+/// it returns. `meta` is what every viewer receives first.
 pub fn serve_live<F>(a: &Args, meta: Vec<u8>, work: F) -> Result<(), String>
 where
     F: FnOnce(Arc<Hub>, Arc<Control>) + Send + 'static,
 {
+    let (hub, ctl) = start_live(a.port, a.speed, meta)?;
+    let (h, c) = (hub.clone(), ctl.clone());
+    std::thread::spawn(move || work(h, c))
+        .join()
+        .map_err(|_| "trainer panicked".to_string())?;
+    finish_live(&hub, &ctl);
+    loop {
+        std::thread::park();
+    }
+}
+
+/// Binds `port` and serves the dashboard on a background thread.
+pub fn start_live(
+    port: u16,
+    speed: u32,
+    meta: Vec<u8>,
+) -> Result<(Arc<Hub>, Arc<Control>), String> {
     let hub = Arc::new(Hub::new());
-    let ctl = Arc::new(Control::new(a.speed));
+    let ctl = Arc::new(Control::new(speed));
     hub.set_meta(meta);
     let listener =
-        TcpListener::bind(("127.0.0.1", a.port)).map_err(|e| format!("port {}: {e}", a.port))?;
-    println!("live view: http://127.0.0.1:{}", a.port);
-
+        TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("port {port}: {e}"))?;
+    println!("live view: http://127.0.0.1:{port}");
     let (h, c) = (hub.clone(), ctl.clone());
-    let worker = std::thread::spawn(move || {
-        work(h.clone(), c.clone());
-        c.finish();
-        server::publish_state(&h, &c);
-    });
-    server::serve(listener, hub, ctl);
-    worker.join().map_err(|_| "trainer panicked".to_string())
+    std::thread::spawn(move || server::serve(listener, h, c));
+    Ok((hub, ctl))
+}
+
+/// Tells viewers training is over.
+pub fn finish_live(hub: &Hub, ctl: &Control) {
+    ctl.finish();
+    server::publish_state(hub, ctl);
 }
 
 /// Builds the packet every viewer starts with.

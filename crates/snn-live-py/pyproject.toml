@@ -1,0 +1,11 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "snn-live"
+requires-python = ">=3.8"
+dynamic = ["version"]
+
+[tool.maturin]
+module-name = "snn_live"
