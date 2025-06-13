@@ -1,5 +1,5 @@
 //! Per-phase timing of PC-SNN on MNIST.
-//! usage: cargo run --release -p mnist-pcsnn-rs --example profile -- <mnist dir> [images]
+//! usage: cargo run --release -p mnist-pcsnn-rs --example pcsnn-profile -- <mnist dir> [images]
 
 use mnist_pcsnn::{Net, Params};
 use snn_core::{dataset, Rng};

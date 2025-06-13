@@ -1,5 +1,5 @@
 //! Per-phase timing of SpNCN on MNIST.
-//! usage: cargo run --release -p mnist-spncn-rs --example profile -- <mnist dir> [images]
+//! usage: cargo run --release -p mnist-spncn-rs --example spncn-profile -- <mnist dir> [images]
 
 use mnist_spncn::{Net, Params};
 use snn_core::encode::{Coding, EncodeParams};

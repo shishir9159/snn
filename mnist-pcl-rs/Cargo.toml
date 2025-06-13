@@ -14,3 +14,7 @@ snn-live.workspace = true
 [[bin]]
 name = "mnist-pcl-rs"
 path = "src/main.rs"
+
+[[example]]
+name = "pcl-profile"
+path = "examples/profile.rs"

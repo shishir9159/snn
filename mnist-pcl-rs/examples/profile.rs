@@ -1,5 +1,5 @@
 //! Per-phase timing of Predictive Coding Light on MNIST.
-//! usage: cargo run --release -p mnist-pcl-rs --example profile -- <mnist dir> [images]
+//! usage: cargo run --release -p mnist-pcl-rs --example pcl-profile -- <mnist dir> [images]
 
 use mnist_pcl::{Net, Params};
 use snn_core::events::{Events, Saccades};

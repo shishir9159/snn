@@ -14,3 +14,7 @@ snn-live.workspace = true
 [[bin]]
 name = "mnist-spncn-rs"
 path = "src/main.rs"
+
+[[example]]
+name = "spncn-profile"
+path = "examples/profile.rs"
