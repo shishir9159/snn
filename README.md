@@ -5,7 +5,5 @@ A straight forward Rust implementation of spiking neural network(eventually hard
 - **Classification**: Winner-takes-all strategy with lateral inhibition
 
 ## Goal
-- [ ] ratatui
+- [ ] ~~ratatui~~
 - [ ] documentation
-
-
