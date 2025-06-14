@@ -16,3 +16,6 @@ target/
 data/
 *.pdb
 *.rs.bk
+__pycache__/
+*.egg-info/
+.pytest_cache/

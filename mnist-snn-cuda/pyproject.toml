@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snn-cuda"
+version = "0.1.0"
+description = "WTA/STDP spiking network on CUDA"
+requires-python = ">=3.10"
+dependencies = ["numpy", "cupy-cuda13x"]
+
+[project.scripts]
+mnist-snn-cuda = "snn_cuda.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+snn_cuda = ["kernels.cu"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
