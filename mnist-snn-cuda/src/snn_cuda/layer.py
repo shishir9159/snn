@@ -8,7 +8,8 @@ import numpy as np
 from .params import Params
 from .rng import Rng
 
-MAXRUN = 8  # inputs per thread, see kernels.cu
+SLICE_BYTES = 12288  # shared memory for precomputed drives
+SHARED_MAX = 48 * 1024
 KERNEL_SRC = Path(__file__).with_name("kernels.cu")
 _module = None
 
@@ -42,6 +43,8 @@ def normalize_rows(w, norm, w_max):
 
 class Layer:
     def __init__(self, n_in, n_out, params=None, weights=None, rng=None):
+        if n_out > 512:
+            raise ValueError("layer too large for one block")
         p = self.p = params or Params()
         self.n_in, self.n_out = n_in, n_out
         if weights is None:
@@ -53,13 +56,8 @@ class Layer:
         # input-major, so a spike adds one contiguous run
         self.w = cp.asarray(np.ascontiguousarray(weights.T))
         self.theta = cp.zeros(n_out, cp.float32)
+        self.block = max(128, -(-n_out // 32) * 32)
         self._config()
-        self.block = 128
-        while self.block < n_out or -(-n_in // self.block) > MAXRUN:
-            self.block *= 2
-        if self.block > 1024:
-            raise ValueError("layer too large for one block")
-        self.shared = 4 * (3 * n_in + p.time_steps + 2)
         self.fn = _present_fn()
         self.fn.max_dynamic_shared_size_bytes = self.shared
         self.sms = cp.cuda.Device().attributes["MultiProcessorCount"]
@@ -73,8 +71,16 @@ class Layer:
         self.fcfg = cp.asarray(np.concatenate([np.float32(f), stdp_table(p)]))
         side = int(round(self.n_in ** 0.5))
         self.width, self.height = width or side, height or self.n_in // (width or side)
+        # drives of this many steps are summed ahead in shared memory
+        slice_ = max(1, min(p.time_steps, SLICE_BYTES // (4 * self.n_out)))
+        min_period = max(int(np.ceil(np.float32(e.period_scale) / np.float32(e.freq_max))), 1)
+        max_spikes = self.n_in * max(p.time_steps // min_period, 1)
+        # per, lit, starts, winner column, drives, spike list (u16)
+        self.shared = 4 * (2 * self.n_in + p.time_steps + 2 + self.n_in + slice_ * self.n_out)             + 2 * max_spikes
+        if self.shared > SHARED_MAX:
+            raise ValueError(f"needs {self.shared} bytes of shared memory per block")
         i = [self.n_in, self.n_out, self.width, self.height, p.time_steps, lif.t_ref,
-             s.t_back, s.t_fore]
+             s.t_back, s.t_fore, slice_, max_spikes]
         self.icfg = cp.asarray(np.int32(i))
 
     def shape(self, width, height):

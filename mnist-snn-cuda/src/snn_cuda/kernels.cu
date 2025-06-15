@@ -4,9 +4,13 @@
 // Training uses a single block that loops over a chunk of images (weights change
 // image to image). Evaluation leaves weights alone, so blocks take images in
 // parallel. Regular coding is closed form: input i spikes at t iff t % period[i] == 0.
+//
+// Per image: build the whole spike schedule, then walk time in slices. Within a
+// slice the drive of every (step, neuron) pair is summed in parallel up front;
+// the serial step loop only integrates from shared memory and meets one barrier.
+// A neuron spiking mid-slice changes its own weights, so its later drives are redone.
 
 #define MAXOUT 1024
-#define MAXRUN 8
 
 __constant__ float KERNEL[5][5] = {
     {-0.5f, -0.125f, 0.25f, -0.125f, -0.5f},
@@ -19,7 +23,7 @@ __constant__ float KERNEL[5][5] = {
 enum { REST, FLOOR, LEAK, POT_MIN, POT_MAX, FREQ_MIN, FREQ_MAX, PERIOD_SCALE, SIGMA,
        W_MIN, W_MAX, THRESHOLD_DIV, SILENT_PENALTY, W_NORM, THETA_RATE, TABLE = 16 };
 // icfg slots
-enum { N_IN, N_OUT, WIDTH, HEIGHT, STEPS, T_REF, T_BACK, T_FORE };
+enum { N_IN, N_OUT, WIDTH, HEIGHT, STEPS, T_REF, T_BACK, T_FORE, SLICE, MAX_SPIKES };
 
 __device__ __forceinline__ float interp(float v, float in_lo, float in_hi, float out_lo, float out_hi) {
     if (in_hi <= in_lo) return out_lo;
@@ -39,6 +43,14 @@ __device__ __forceinline__ bool better(float am, int aj, float bm, int bj) {
     return am > bm || (am == bm && aj > bj);
 }
 
+// sum of neuron j's weights from the inputs spiking at step s, ascending, as the CPU model does
+__device__ __forceinline__ float drive(const float* w, const unsigned short* act,
+                                       const int* st, int s, int n_out, int j) {
+    float d = 0.0f;
+    for (int a = st[s]; a < st[s + 1]; a++) d += w[(size_t)act[a] * n_out + j];
+    return d;
+}
+
 // rec_*: per-step record of one presentation for the live view (null when unused)
 extern "C" __global__ void present(
     const unsigned char* pixels, const int* order, int n_img, int learn,
@@ -51,24 +63,26 @@ extern "C" __global__ void present(
     extern __shared__ int sm[];
     const int n_in = icfg[N_IN], n_out = icfg[N_OUT], W = icfg[WIDTH], H = icfg[HEIGHT];
     const int steps = icfg[STEPS], t_ref = icfg[T_REF], tb = icfg[T_BACK], tf = icfg[T_FORE];
+    const int slice = icfg[SLICE], max_spikes = icfg[MAX_SPIKES];
     const int tid = threadIdx.x, B = blockDim.x, lane = tid & 31, warp = tid >> 5;
     const int nwarps = (B + 31) >> 5;
-    int* per = sm;                 // n_in
-    int* act = per + n_in;         // n_in
-    int* cnt = act + n_in;         // steps + 2
-    float* col = (float*)(cnt + steps + 2);  // n_in, the winner's weights
+    int* per = sm;                                    // n_in, 0 = silent
+    int* lit = per + n_in;                            // inputs that spike, ascending
+    int* st = lit + n_in;                             // steps + 2, start of each step in act
+    float* col = (float*)(st + steps + 2);            // n_in, the winner's weights
+    float* drv = col + n_in;                          // slice * n_out
+    unsigned short* act = (unsigned short*)(drv + slice * n_out);  // max_spikes
     __shared__ int wc[32], wi[32], s_winner, s_nfired, s_max, fl[MAXOUT];
     __shared__ float wm[32], s_len;
 
     const float rest = fcfg[REST], floor_ = fcfg[FLOOR], leak = fcfg[LEAK];
-    const int per_thread = (n_in + B - 1) / B;
+    const int run = (n_in + B - 1) / B;
 
     for (int k = blockIdx.x; k < n_img; k += gridDim.x) {
         const int img = order ? order[k] : k;
         const unsigned char* px = pixels + (size_t)img * n_in;
 
-        for (int s = tid; s < steps + 2; s += B) cnt[s] = 0;
-        if (tid == 0) s_max = 0;
+        for (int s = tid; s < steps + 2; s += B) st[s] = 0;
         __syncthreads();
 
         // receptive field, then spike periods and per-step spike counts
@@ -87,107 +101,144 @@ extern "C" __global__ void present(
             }
             const int pr = period(pot, fcfg, steps);
             per[i] = pr;
-            if (pr) for (int t = pr; t <= steps; t += pr) atomicAdd(&cnt[t], 1);
+            if (pr) for (int t = pr; t <= steps; t += pr) atomicAdd(&st[t], 1);
         }
         __syncthreads();
-        for (int t = 1 + tid; t <= steps; t += B) atomicMax(&s_max, cnt[t]);
+
+        // peak simultaneous spikes, and counts -> start offsets (one warp, lanes own runs)
+        if (warp == 0) {
+            const int n = steps + 2, per_lane = (n + 31) / 32, lo = lane * per_lane;
+            const int hi = min(lo + per_lane, n);
+            int sum = 0, mx = 0;
+            for (int s = lo; s < hi; s++) { sum += st[s]; mx = max(mx, st[s]); }
+            int scan = sum;
+            for (int o = 1; o < 32; o <<= 1) {
+                int v = __shfl_up_sync(0xffffffffu, scan, o);
+                if (lane >= o) scan += v;
+            }
+            for (int o = 16; o > 0; o >>= 1) mx = max(mx, __shfl_down_sync(0xffffffffu, mx, o));
+            int acc = scan - sum;
+            for (int s = lo; s < hi; s++) { int c = st[s]; st[s] = acc; acc += c; }
+            if (lane == 0) s_max = mx;
+        }
+
+        // inputs that spike at all, ascending: each thread owns a run of inputs
+        int c = 0;
+        for (int m = 0; m < run && tid * run + m < n_in; m++) c += per[tid * run + m] > 0;
+        int scan = c;
+        for (int o = 1; o < 32; o <<= 1) {
+            int v = __shfl_up_sync(0xffffffffu, scan, o);
+            if (lane >= o) scan += v;
+        }
+        if (lane == 31) wc[warp] = scan;
         __syncthreads();
+        int off = scan - c, nlit = 0;
+        for (int q = 0; q < nwarps; q++) {
+            if (q < warp) off += wc[q];
+            nlit += wc[q];
+        }
+        for (int m = 0; m < run && tid * run + m < n_in; m++)
+            if (per[tid * run + m] > 0) lit[off++] = tid * run + m;
+        if (tid == 0) { s_winner = -1; s_nfired = 0; }
+        __syncthreads();
+
+        // each step collects its spiking inputs, ascending
+        for (int t = 1 + tid; t <= steps; t += B) {
+            int pos = st[t];
+            for (int l = 0; l < nlit; l++) {
+                const int i = lit[l];
+                if (t % per[i] == 0 && pos < max_spikes) act[pos++] = (unsigned short)i;
+            }
+        }
+        __syncthreads();
+
+        if (rec_act)
+            for (int t = 1 + tid; t <= steps; t += B)
+                for (int a = st[t]; a < st[t + 1]; a++) rec_act[(size_t)(t - 1) * n_in + act[a]] = 1;
+
         // a blank image gives no drive; keep the threshold above rest
         const float base = fmaxf((float)s_max / fcfg[THRESHOLD_DIV], 1.0f);
         const float thr = tid < n_out ? base * (1.0f + theta[tid]) : 0.0f;
 
         float p = rest;
         int t_rest = -1, nspk = 0;
-        if (tid == 0) s_winner = -1;
-        __syncthreads();
 
-        for (int t = 1; t <= steps; t++) {
-            // compact the inputs spiking now, ascending: each thread owns a run of inputs
-            int mine[MAXRUN], c = 0;  // MAXRUN covers n_in <= MAXRUN * blockDim
-            const int lo = tid * per_thread;
-            for (int m = 0; m < per_thread && lo + m < n_in; m++) {
-                const int i = lo + m, pr = per[i];
-                if (pr && t % pr == 0) mine[c++] = i;
-            }
-            int scan = c;
-            for (int o = 1; o < 32; o <<= 1) {
-                int v = __shfl_up_sync(0xffffffffu, scan, o);
-                if (lane >= o) scan += v;
-            }
-            if (lane == 31) wc[warp] = scan;
-            if (tid == 0) s_nfired = 0;
-            __syncthreads();
-            int off = scan - c, nact = 0;
-            for (int q = 0; q < nwarps; q++) {
-                if (q < warp) off += wc[q];
-                nact += wc[q];
-            }
-            for (int m = 0; m < c; m++) {
-                act[off + m] = mine[m];
-                if (rec_act) rec_act[(size_t)(t - 1) * n_in + mine[m]] = 1;
+        for (int c0 = 0; c0 < steps; c0 += slice) {
+            const int tca = min(slice, steps - c0);
+            for (int idx = tid; idx < tca * n_out; idx += B) {
+                const int tt = idx / n_out;
+                drv[idx] = drive(w, act, st, c0 + 1 + tt, n_out, idx - tt * n_out);
             }
             __syncthreads();
 
-            // integrate: sum the active columns in input order, as the CPU model does
-            if (tid < n_out) {
-                float drive = 0.0f;
-                for (int a = 0; a < nact; a++) drive += w[(size_t)act[a] * n_out + tid];
-                if (!(t <= t_rest)) {
-                    p += drive;
+            for (int tt = 0; tt < tca; tt++) {
+                const int t = c0 + 1 + tt;
+                if (tid < n_out && !(t <= t_rest)) {
+                    p += drv[tt * n_out + tid];
                     if (p > rest) p = fmaxf(p - leak, rest);
                     if (p < floor_) p = floor_;
                 }
-            }
-
-            // first neuron furthest past its threshold wins and inhibits the rest
-            if (s_winner < 0) {
-                float m = -3.0e38f;
-                int j = tid;
-                if (tid < n_out && !(t <= t_rest)) m = p - thr;
-                for (int o = 16; o > 0; o >>= 1) {
-                    float om = __shfl_down_sync(0xffffffffu, m, o);
-                    int oj = __shfl_down_sync(0xffffffffu, j, o);
-                    if (better(om, oj, m, j)) { m = om; j = oj; }
-                }
-                if (lane == 0) { wm[warp] = m; wi[warp] = j; }
-                __syncthreads();
-                if (tid == 0) {
-                    float bm = wm[0]; int bj = wi[0];
-                    for (int q = 1; q < nwarps; q++)
-                        if (better(wm[q], wi[q], bm, bj)) { bm = wm[q]; bj = wi[q]; }
-                    s_winner = bm >= 0.0f ? bj : -1;
-                }
-                __syncthreads();
-                if (s_winner >= 0 && tid < n_out && tid != s_winner) p = floor_;
-            }
-
-            if (tid < n_out && p >= thr) {
-                p = rest;
-                t_rest = t + t_ref;
-                nspk++;
-                fl[atomicAdd(&s_nfired, 1)] = tid;
-            }
-            if (rec_pot && tid < n_out) {
-                rec_pot[(size_t)(t - 1) * n_out + tid] = p;
-                rec_fired[(size_t)(t - 1) * n_out + tid] = (t_rest == t + t_ref);
-            }
-            __syncthreads();
-
-            if (learn && s_nfired > 0) {
-                const int lo_s = max(t - tb, 1), hi_s = min(t + tf, steps);
-                for (int f = 0; f < s_nfired; f++) {
-                    const int j = fl[f];
-                    for (int i = tid; i < n_in; i += B) {
-                        const int pr = per[i];
-                        if (!pr) continue;
-                        float wt = w[(size_t)i * n_out + j];
-                        for (int s = ((lo_s + pr - 1) / pr) * pr; s <= hi_s; s += pr) {
-                            const float dw = fcfg[TABLE + s + tb - t];
-                            wt = dw > 0.0f ? wt + fcfg[SIGMA] * dw * (fcfg[W_MAX] - wt)
-                                           : wt + fcfg[SIGMA] * dw * (wt - fcfg[W_MIN]);
+                bool fired = false;
+                // one barrier per step; only a neuron at threshold needs the rest
+                if (__syncthreads_or(tid < n_out && p >= thr)) {
+                    // first neuron furthest past its threshold wins and inhibits the rest
+                    if (s_winner < 0) {
+                        float m = -3.0e38f;
+                        int j = tid;
+                        if (tid < n_out && !(t <= t_rest)) m = p - thr;
+                        for (int o = 16; o > 0; o >>= 1) {
+                            float om = __shfl_down_sync(0xffffffffu, m, o);
+                            int oj = __shfl_down_sync(0xffffffffu, j, o);
+                            if (better(om, oj, m, j)) { m = om; j = oj; }
                         }
-                        w[(size_t)i * n_out + j] = wt;
+                        if (lane == 0) { wm[warp] = m; wi[warp] = j; }
+                        __syncthreads();
+                        if (tid == 0) {
+                            float bm = wm[0]; int bj = wi[0];
+                            for (int q = 1; q < nwarps; q++)
+                                if (better(wm[q], wi[q], bm, bj)) { bm = wm[q]; bj = wi[q]; }
+                            s_winner = bm >= 0.0f ? bj : -1;
+                        }
+                        __syncthreads();
+                        if (s_winner >= 0 && tid < n_out && tid != s_winner) p = floor_;
                     }
+                    if (tid < n_out && p >= thr) {
+                        fired = true;
+                        p = rest;
+                        t_rest = t + t_ref;
+                        nspk++;
+                        if (learn) fl[atomicAdd(&s_nfired, 1)] = tid;
+                    }
+                    __syncthreads();
+
+                    const int nf = s_nfired;
+                    if (learn && nf > 0) {
+                        const int lo_s = max(t - tb, 1), hi_s = min(t + tf, steps);
+                        for (int f = 0; f < nf; f++) {
+                            const int j = fl[f];
+                            for (int l = tid; l < nlit; l += B) {
+                                const int i = lit[l], pr = per[i];
+                                float wt = w[(size_t)i * n_out + j];
+                                for (int s = ((lo_s + pr - 1) / pr) * pr; s <= hi_s; s += pr) {
+                                    const float dw = fcfg[TABLE + s + tb - t];
+                                    wt = dw > 0.0f ? wt + fcfg[SIGMA] * dw * (fcfg[W_MAX] - wt)
+                                                   : wt + fcfg[SIGMA] * dw * (wt - fcfg[W_MIN]);
+                                }
+                                w[(size_t)i * n_out + j] = wt;
+                            }
+                        }
+                        __syncthreads();
+                        // the neuron's later drives in this slice used the old weights
+                        for (int f = 0; f < nf; f++)
+                            for (int u = tt + 1 + tid; u < tca; u += B)
+                                drv[u * n_out + fl[f]] = drive(w, act, st, c0 + 1 + u, n_out, fl[f]);
+                        if (tid == 0) s_nfired = 0;
+                        __syncthreads();
+                    }
+                }
+                if (rec_pot && tid < n_out) {
+                    rec_pot[(size_t)(t - 1) * n_out + tid] = p;
+                    rec_fired[(size_t)(t - 1) * n_out + tid] = fired;
                 }
             }
             __syncthreads();
