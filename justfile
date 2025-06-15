@@ -27,3 +27,11 @@ mnist:
 # build the snn_live Python module into the active virtualenv
 snn-live-py:
     maturin develop --release -m crates/snn-live-py/Cargo.toml
+# WTA STDP on CUDA (Python + CuPy), live view at http://127.0.0.1:7878
+mnist-snn-cuda *args: mnist
+    python -m snn_cuda --mnist {{data}} {{args}}
+
+# Rust CPU vs CUDA, interleaved best-of-5
+snn-cuda-bench *args:
+    cargo build --release -p mnist-snn-rs --examples
+    python -m snn_cuda.bench --mnist {{data}} {{args}}

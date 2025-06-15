@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["numpy", "cupy-cuda13x"]
 
 [project.scripts]
+snn-cuda-bench = "snn_cuda.bench:main"
 mnist-snn-cuda = "snn_cuda.__main__:main"
 
 [tool.setuptools.packages.find]
