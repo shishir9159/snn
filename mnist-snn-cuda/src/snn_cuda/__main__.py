@@ -17,6 +17,9 @@ def parse(argv):
     a.add_argument("--outputs", type=int, default=40, help="output neurons")
     a.add_argument("--load", help="start from saved weights")
     a.add_argument("--save", help="save weights after training")
+    a.add_argument("--live", action="store_true", help="serve the live view (needs snn_live)")
+    a.add_argument("--port", type=int, default=7878, help="live view port")
+    a.add_argument("--speed", default="1", help="multiple of real time, or max (live only)")
     return a.parse_args(argv)
 
 
@@ -64,6 +67,12 @@ def main(argv=None):
     t.layer.shape(train.width, train.height)
     if w is not None:
         t.assign_labels(train)
+    if a.live:
+        from .live import LiveRun
+
+        speed = None if a.speed == "max" else float(a.speed)
+        LiveRun(t, train, test, a.epochs, a.port, speed).fit()
+        return
     p = Printer(len(train))
     t.on_image = p.image
     t.fit(train, test if len(test) else None, a.epochs, p.epoch)

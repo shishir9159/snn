@@ -72,17 +72,20 @@ class Trainer:
             hits += self._drain(epoch, len(order), data, pending.popleft())
         return hits / max(len(order), 1)
 
+    def settle(self, winner, label):
+        """Scores a winner against its label, then lets the label teach the neuron."""
+        correct = winner >= 0 and self.labels.of(winner) == label
+        if winner >= 0:
+            self.labels.record(winner, label)
+        self.recent.append(correct)
+        return correct
+
     def _drain(self, epoch, total, data, item):
         """Replays one launch's winners on the host: labels and running accuracy."""
         start, ids, launch = item
         hits = 0
         for k, w in enumerate(cp.asnumpy(launch[0])):
-            label = int(data.labels[ids[k]])
-            correct = w >= 0 and self.labels.of(int(w)) == label
-            if w >= 0:
-                self.labels.record(int(w), label)
-            self.recent.append(correct)
-            hits += correct
+            hits += self.settle(int(w), int(data.labels[ids[k]]))
             if self.on_image:
                 self.on_image(epoch, start + k, total, self.running_accuracy())
         return hits
