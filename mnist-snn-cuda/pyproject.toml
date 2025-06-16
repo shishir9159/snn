@@ -7,7 +7,22 @@ name = "snn-cuda"
 version = "0.1.0"
 description = "WTA/STDP spiking network on CUDA"
 requires-python = ">=3.10"
-dependencies = ["numpy", "cupy-cuda13x"]
+dependencies = [
+    "numpy",
+    "cupy-cuda12x",
+    "nvidia-cuda-runtime-cu12>=12.9.79",
+    "nvidia-cuda-nvrtc-cu12>=12.9.86",
+]
+
+[project.optional-dependencies]
+# the live view runs in the Rust server built from crates/snn-live-py
+live = ["snn-live"]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv.sources]
+snn-live = { workspace = true }
 
 [project.scripts]
 snn-cuda-bench = "snn_cuda.bench:main"

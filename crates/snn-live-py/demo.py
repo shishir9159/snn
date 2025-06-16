@@ -1,5 +1,6 @@
 """Random population model on the live view: shows how a Python trainer drives
-snn_live. Build first with `just snn-live-py`, then open http://127.0.0.1:7878."""
+snn_live. Run with `uv run --package snn-live python crates/snn-live-py/demo.py`, then open
+http://127.0.0.1:7878."""
 
 import sys
 

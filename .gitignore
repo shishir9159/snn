@@ -4,6 +4,9 @@
 !/Cargo.lock
 !/rust-toolchain.toml
 !/justfile
+!/pyproject.toml
+!/uv.lock
+!/.python-version
 !/LICENSE
 !/README.md
 !/crates/
@@ -19,3 +22,4 @@ data/
 __pycache__/
 *.egg-info/
 .pytest_cache/
+.venv/

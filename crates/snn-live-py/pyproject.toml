@@ -9,3 +9,16 @@ dynamic = ["version"]
 
 [tool.maturin]
 module-name = "snn_live"
+
+[dependency-groups]
+dev = ["numpy"]
+
+[tool.uv]
+# rebuild when the Rust sources change, not only the packaging files
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "src/**/*.rs" },
+    { file = "../snn-core/src/**/*.rs" },
+    { file = "../snn-live/src/**/*.rs" },
+]

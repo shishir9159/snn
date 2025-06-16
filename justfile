@@ -24,14 +24,15 @@ mnist:
         [ -f {{data}}/$f.gz ] || { curl -#fL --retry 3 -o {{data}}/$f.gz.part {{mirror}}/$f.gz && mv {{data}}/$f.gz.part {{data}}/$f.gz; } || exit 1; \
     done
 
-# build the snn_live Python module into the active virtualenv
+# build the snn_live Python module into the uv environment
 snn-live-py:
-    maturin develop --release -m crates/snn-live-py/Cargo.toml
+    uv sync --package snn-live
+
 # WTA STDP on CUDA (Python + CuPy), live view at http://127.0.0.1:7878
 mnist-snn-cuda *args: mnist
-    python -m snn_cuda --mnist {{data}} {{args}}
+    uv run --package snn-cuda --extra live python -m snn_cuda --mnist {{data}} {{args}}
 
 # Rust CPU vs CUDA, interleaved best-of-5
 snn-cuda-bench *args:
     cargo build --release -p mnist-snn-rs --examples
-    python -m snn_cuda.bench --mnist {{data}} {{args}}
+    uv run --package snn-cuda python -m snn_cuda.bench --mnist {{data}} {{args}}
