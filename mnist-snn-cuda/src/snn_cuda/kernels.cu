@@ -322,7 +322,7 @@ extern "C" __global__ void __launch_bounds__(MAX_THREADS) present(
     const int steps = icfg[STEPS], t_ref = icfg[T_REF], tb = icfg[T_BACK], tf = icfg[T_FORE];
     const int max_spikes = icfg[MAX_SPIKES];
     const int NN = (n_out + 31) & ~31, NP = blockDim.x - NN, tid = threadIdx.x;
-    const int CAP = min(32, 8192 / NN);  // weights a neuron gathers per slice of steps
+    const int CAP = min(32, max(8, 4096 / NN));  // weights a neuron gathers per slice of steps
     const int count = blockIdx.x < n_img ? (n_img - blockIdx.x + gridDim.x - 1) / gridDim.x : 0;
     if (count == 0) return;
 

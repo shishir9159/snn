@@ -82,7 +82,7 @@ class Layer:
         # two schedules (period, lit, divisors, step starts, slices, spikes), then the pixel
         # plane, the gather stage, the winner's column and drives, and the STDP table
         nn = -(-self.n_out // 32) * 32
-        cap = min(32, 8192 // nn)
+        cap = min(32, max(8, 4096 // nn))
         sched = (2 * al4(2 * n_in) + 4 * n_in + 4 * (steps + 2) + al4(2 * (steps + 2))
                  + al4(2 * max_spikes))
         self.shared = (2 * sched + 4 * (self.width + 4) * (self.height + 4) + 4 * cap * nn
