@@ -4,7 +4,7 @@
 use crate::{frame, server, Hub};
 use snn_core::dataset::{self, Dataset};
 use snn_core::{Control, EpochResult, ImageInfo, Rng};
-use std::net::TcpListener;
+use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -18,6 +18,8 @@ pub const USAGE: &str = "  --mnist DIR        MNIST idx files (plain or .gz) in 
   --seed N           random seed (default 1)
   --headless         train without the live view
   --port N           live view port (default 7878)
+  --bind ADDR        live view address (default 127.0.0.1); other than
+                     loopback lets the network pause and stop training
   --speed X          multiple of real time, 1 ms per step; or max (default 1)";
 
 /// One simulated step per millisecond.
@@ -33,6 +35,7 @@ pub struct Args {
     pub seed: u64,
     pub headless: bool,
     pub port: u16,
+    pub bind: IpAddr,
     /// steps per second, 0 for unthrottled
     pub speed: u32,
 }
@@ -53,6 +56,7 @@ impl Args {
             seed: 1,
             headless: false,
             port: 7878,
+            bind: Ipv4Addr::LOCALHOST.into(),
             speed: REAL_TIME as u32,
         };
         let mut it = args.into_iter();
@@ -76,6 +80,7 @@ impl Args {
                 "--epochs" => a.epochs = Some(num(&val)?),
                 "--seed" => a.seed = num(&val)? as u64,
                 "--port" => a.port = val.parse().map_err(|_| bad())?,
+                "--bind" => a.bind = val.parse().map_err(|_| bad())?,
                 "--speed" if val == "max" => a.speed = 0,
                 "--speed" => {
                     let x: f32 = val.parse().map_err(|_| bad())?;
@@ -177,7 +182,7 @@ pub fn serve_live<F>(a: &Args, meta: Vec<u8>, work: F) -> Result<(), String>
 where
     F: FnOnce(Arc<Hub>, Arc<Control>) + Send + 'static,
 {
-    let (hub, ctl) = start_live(a.port, a.speed, meta)?;
+    let (hub, ctl) = start_live(a.bind, a.port, a.speed, meta)?;
     let (h, c) = (hub.clone(), ctl.clone());
     std::thread::spawn(move || work(h, c))
         .join()
@@ -188,8 +193,9 @@ where
     }
 }
 
-/// Binds `port` and serves the dashboard on a background thread.
+/// Binds `bind:port` and serves the dashboard on a background thread.
 pub fn start_live(
+    bind: IpAddr,
     port: u16,
     speed: u32,
     meta: Vec<u8>,
@@ -197,9 +203,14 @@ pub fn start_live(
     let hub = Arc::new(Hub::new());
     let ctl = Arc::new(Control::new(speed));
     hub.set_meta(meta);
-    let listener =
-        TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("port {port}: {e}"))?;
-    println!("live view: http://127.0.0.1:{port}");
+    let listener = TcpListener::bind((bind, port)).map_err(|e| format!("{bind}:{port}: {e}"))?;
+    println!(
+        "live view: http://{}",
+        listener.local_addr().map_err(|e| e.to_string())?
+    );
+    if !bind.is_loopback() {
+        eprintln!("warning: anyone who can reach {bind} can pause, speed up and stop training");
+    }
     let (h, c) = (hub.clone(), ctl.clone());
     std::thread::spawn(move || server::serve(listener, h, c));
     Ok((hub, ctl))
@@ -243,6 +254,9 @@ mod tests {
         assert_eq!(a.speed, 0);
         assert_eq!(a.epochs(), 1);
         assert_eq!(parse("--speed 2").unwrap().speed, 2000);
+        assert!(parse("").unwrap().bind.is_loopback());
+        assert!(!parse("--bind 0.0.0.0").unwrap().bind.is_loopback());
+        assert!(parse("--bind lan").unwrap_err().contains("bad value"));
         assert!(parse("--bogus 1").unwrap_err().contains("unknown"));
         assert_eq!(parse("--help").unwrap_err(), "");
     }

@@ -13,6 +13,7 @@ use snn_core::{Control, EpochResult, ImageInfo, Pacer};
 use snn_live::frame::{self, Buf, Param, Pop, Role};
 use snn_live::pop::End;
 use snn_live::{app, Hub, PopTap};
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -160,7 +161,8 @@ impl Live {
         let (step, probe, image) = series.unwrap_or_default();
         let packet = intro(meta, title, &params, &pops, [step, probe, image])?;
         let speed = speed.map_or(0, |x| (x * REAL_TIME).max(1.0) as u32);
-        let (hub, ctl) = app::start_live(port, speed, packet).map_err(PyValueError::new_err)?;
+        let (hub, ctl) = app::start_live(Ipv4Addr::LOCALHOST.into(), port, speed, packet)
+            .map_err(PyValueError::new_err)?;
         Ok(Self {
             tap: PopTap::new(hub.clone(), ctl.clone()),
             hub,

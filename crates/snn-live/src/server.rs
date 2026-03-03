@@ -5,10 +5,13 @@ use super::frame::{self, Buf};
 use super::hub::Hub;
 use snn_core::Control;
 use std::io::{self, ErrorKind, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 use tungstenite::{Error as WsError, Message};
+
+/// Viewers streamed to at once; each one holds a thread.
+const MAX_VIEWERS: usize = 16;
 
 const INDEX: &str = include_str!("../../../web/index.html");
 
@@ -88,6 +91,12 @@ fn handle(mut stream: TcpStream, hub: &Hub, ctl: &Control) -> io::Result<()> {
         l.starts_with("upgrade:") && l.contains("websocket")
     });
     if upgrade {
+        if !upgrade_allowed(&text) {
+            return reject(stream, "403 Forbidden");
+        }
+        if hub.viewers() >= MAX_VIEWERS {
+            return reject(stream, "503 Service Unavailable");
+        }
         return session(stream, hub, ctl);
     }
 
@@ -110,6 +119,42 @@ fn handle(mut stream: TcpStream, hub: &Hub, ctl: &Control) -> io::Result<()> {
         )?,
     }
     stream.flush()
+}
+
+fn reject(mut stream: TcpStream, status: &str) -> io::Result<()> {
+    let head = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    stream.write_all(head.as_bytes())?;
+    stream.flush()
+}
+
+fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines().skip(1).find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim().eq_ignore_ascii_case(name).then(|| v.trim())
+    })
+}
+
+/// Whether a `Host` value names this machine by address or as localhost. A
+/// page reaching the server through a rebound DNS name fails this.
+fn is_local_host(host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(""),
+        None => host.rsplit_once(':').map_or(host, |(name, _)| name),
+    };
+    name.eq_ignore_ascii_case("localhost") || name.parse::<IpAddr>().is_ok()
+}
+
+/// Browsers always send `Origin` on a WebSocket handshake, so another site's
+/// page can't drive training; clients that send none are not browsers.
+fn upgrade_allowed(head: &str) -> bool {
+    let Some(host) = header(head, "host").filter(|h| is_local_host(h)) else {
+        return false;
+    };
+    header(head, "origin").is_none_or(|origin| {
+        origin
+            .split_once("://")
+            .is_some_and(|(_, authority)| authority.eq_ignore_ascii_case(host))
+    })
 }
 
 /// The request head, left unread in the socket.
@@ -220,6 +265,74 @@ mod tests {
         assert!(view.contains("text/javascript") && view.contains("registerView"));
         let font = get(addr, "/fonts/barlow-400.woff2");
         assert!(font.contains("font/woff2") && font.contains("wOF2"));
+    }
+
+    /// Status line (`HTTP/1.1 nnn`) the server answers a handshake from a host and origin with.
+    fn upgrade(addr: SocketAddr, host: &str, origin: Option<&str>) -> String {
+        let mut s = TcpStream::connect(addr).unwrap();
+        let origin = origin.map_or(String::new(), |o| format!("Origin: {o}\r\n"));
+        write!(
+            s,
+            "GET /ws HTTP/1.1\r\nHost: {host}\r\n{origin}Upgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        .unwrap();
+        let mut status = [0u8; 12];
+        s.read_exact(&mut status).unwrap();
+        String::from_utf8_lossy(&status).into_owned()
+    }
+
+    #[test]
+    fn only_addresses_and_localhost_are_local_hosts() {
+        for h in [
+            "127.0.0.1:7878",
+            "localhost:80",
+            "LOCALHOST",
+            "[::1]:7878",
+            "10.0.0.5:9",
+        ] {
+            assert!(is_local_host(h), "{h}");
+        }
+        for h in [
+            "evil.example:7878",
+            "127.0.0.1.evil.com",
+            "localhost.evil.com:80",
+            "",
+        ] {
+            assert!(!is_local_host(h), "{h}");
+        }
+    }
+
+    #[test]
+    fn other_sites_cannot_open_a_viewer() {
+        let (addr, _, _) = start();
+        let me = addr.to_string();
+        let evil = format!("evil.example:{}", addr.port());
+        for (host, origin) in [
+            (&me, Some("http://evil.example")),
+            (&me, Some("null")),
+            (&evil, Some(format!("http://{evil}").as_str())),
+        ] {
+            let answer = upgrade(addr, host, origin);
+            assert!(
+                answer.starts_with("HTTP/1.1 403"),
+                "{host} {origin:?}: {answer}"
+            );
+        }
+        let own = upgrade(addr, &me, Some(&format!("http://{me}")));
+        assert!(own.starts_with("HTTP/1.1 101"), "{own}");
+        assert!(upgrade(addr, &me, None).starts_with("HTTP/1.1 101"));
+    }
+
+    #[test]
+    fn viewers_are_capped() {
+        let (addr, hub, _) = start();
+        let me = addr.to_string();
+        let held: Vec<_> = (0..MAX_VIEWERS).map(|_| hub.join()).collect();
+        assert!(upgrade(addr, &me, None).starts_with("HTTP/1.1 503"));
+        drop(held);
+        assert!(upgrade(addr, &me, None).starts_with("HTTP/1.1 101"));
     }
 
     #[test]
