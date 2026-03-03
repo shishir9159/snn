@@ -24,6 +24,17 @@ mnist:
         [ -f {{data}}/$f.gz ] || { curl -#fL --retry 3 -o {{data}}/$f.gz.part {{mirror}}/$f.gz && mv {{data}}/$f.gz.part {{data}}/$f.gz; } || exit 1; \
     done
 
+# format, lint and test the way CI does
+check:
+    cargo fmt --all --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo test --workspace --exclude snn-live-py
+    uv run --package snn-cuda pytest mnist-snn-cuda/tests
+
+# rewrite the Rust sources in the standard format
+fmt:
+    cargo fmt --all
+
 # build the snn_live Python module into the uv environment
 snn-live-py:
     uv sync --package snn-live
