@@ -3,7 +3,7 @@
 use crate::rng::Rng;
 use std::fs;
 use std::io::{self, BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// `n` weights uniform in [lo, hi).
 pub fn random(n: usize, lo: f32, hi: f32, rng: &mut Rng) -> Vec<f32> {
@@ -12,7 +12,12 @@ pub fn random(n: usize, lo: f32, hi: f32, rng: &mut Rng) -> Vec<f32> {
 
 /// Writes `rows cols` on the first line, then one row per line.
 pub fn save(path: &Path, rows: usize, cols: usize, w: &[f32]) -> io::Result<()> {
-    assert_eq!(w.len(), rows * cols);
+    if w.len() != rows * cols {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} weights for {rows}x{cols}", w.len()),
+        ));
+    }
     let mut f = BufWriter::new(fs::File::create(path)?);
     writeln!(f, "{rows} {cols}")?;
     for row in w.chunks_exact(cols.max(1)) {
@@ -29,6 +34,52 @@ pub fn load(path: &Path) -> io::Result<(usize, usize, Vec<f32>)> {
 
 fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
+/// The `--load` and `--save` flags of a model whose weights persist.
+#[derive(Debug, Clone, Default)]
+pub struct Files {
+    pub load: Option<PathBuf>,
+    pub save: Option<PathBuf>,
+}
+
+impl Files {
+    /// The two flags' lines for a usage text.
+    pub const USAGE: &'static str = "  --load FILE        start from saved weights
+  --save FILE        save weights after training";
+
+    /// Takes `flag` if it is one of ours.
+    pub fn flag(&mut self, flag: &str, val: &str) -> bool {
+        match flag {
+            "--load" => self.load = Some(val.into()),
+            "--save" => self.save = Some(val.into()),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The (rows, weights) to start from, if `--load` was given; each row must
+    /// hold `cols` weights.
+    pub fn start(&self, cols: usize) -> Result<Option<(usize, Vec<f32>)>, String> {
+        let Some(path) = &self.load else {
+            return Ok(None);
+        };
+        let fail = |e: String| format!("{}: {e}", path.display());
+        let (rows, found, w) = load(path).map_err(|e| fail(e.to_string()))?;
+        if found != cols {
+            return Err(fail(format!("rows have {found} weights, expected {cols}")));
+        }
+        Ok(Some((rows, w)))
+    }
+
+    /// Writes the weights to the `--save` file and returns it, if there is one.
+    pub fn finish(&self, rows: usize, cols: usize, w: &[f32]) -> Result<Option<&Path>, String> {
+        let Some(path) = &self.save else {
+            return Ok(None);
+        };
+        save(path, rows, cols, w).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Some(path))
+    }
 }
 
 /// Saves weight rows as a grid of `side`² tiles, `lo` black and `hi` white.
@@ -111,6 +162,48 @@ mod tests {
         let loaded = load(&path);
         fs::remove_file(&path).ok();
         assert_eq!(loaded.unwrap(), (3, 5, w));
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("snn-{name}-{}.txt", std::process::id()))
+    }
+
+    #[test]
+    fn files_take_only_their_flags() {
+        let mut f = Files::default();
+        assert!(f.flag("--load", "a.txt") && f.flag("--save", "b.txt"));
+        assert!(!f.flag("--outputs", "9"));
+        assert_eq!(f.load, Some("a.txt".into()));
+        assert_eq!(f.save, Some("b.txt".into()));
+    }
+
+    #[test]
+    fn files_round_trip_and_check_the_row_width() {
+        let path = temp("files");
+        let f = Files {
+            load: Some(path.clone()),
+            save: Some(path.clone()),
+        };
+        let w = random(2 * 6, 0.0, 1.0, &mut Rng::new(8));
+        assert_eq!(f.finish(2, 6, &w).unwrap(), Some(path.as_path()));
+        assert_eq!(f.start(6).unwrap(), Some((2, w)));
+        let wrong = f.start(5).unwrap_err();
+        fs::remove_file(&path).ok();
+        assert!(wrong.contains("6 weights, expected 5"), "{wrong}");
+        assert!(f.start(6).is_err(), "the file is gone");
+    }
+
+    #[test]
+    fn nothing_to_load_or_save_is_fine() {
+        let f = Files::default();
+        assert_eq!(f.start(3).unwrap(), None);
+        assert_eq!(f.finish(1, 3, &[0.0; 3]).unwrap(), None);
+    }
+
+    #[test]
+    fn saving_the_wrong_size_is_an_error_not_a_panic() {
+        let err = save(&temp("size"), 2, 3, &[0.0; 5]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
