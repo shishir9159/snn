@@ -4,7 +4,7 @@
 
 use crate::frame::{self, Buf};
 use crate::hub::Hub;
-use snn_core::{Activity, EpochResult, ImageInfo, PerImage};
+use snn_core::{Activity, Confusion, EpochResult, ImageInfo, PerImage};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -59,6 +59,8 @@ pub struct Stream {
     pub history: Vec<Series>,
     /// finished epochs with the images seen by then, replayed to late viewers
     epochs: Vec<(EpochResult, u64)>,
+    /// the latest test pass, replayed to late viewers
+    confusion: Option<Confusion>,
 }
 
 impl Stream {
@@ -80,6 +82,7 @@ impl Stream {
             rate: (Instant::now(), 0, 0.0),
             history: vec![Series::default()],
             epochs: Vec::new(),
+            confusion: None,
         }
     }
 
@@ -194,6 +197,9 @@ impl Stream {
         for (e, images) in &self.epochs {
             frame::epoch(&mut b, e, *images);
         }
+        if let Some(c) = &self.confusion {
+            frame::confusion(&mut b, c);
+        }
         if let Some(p) = self.progress_record() {
             frame::progress(&mut b, &p);
         }
@@ -204,7 +210,15 @@ impl Stream {
     pub fn epoch_end(&mut self, e: &EpochResult, model: &[u8]) {
         self.close_steps();
         frame::epoch(&mut self.buf, e, self.images);
-        self.epochs.push((e.clone(), self.images));
+        if let Some(c) = &e.confusion {
+            frame::confusion(&mut self.buf, c);
+            self.confusion = Some(c.clone());
+        }
+        let kept = EpochResult {
+            confusion: None,
+            ..e.clone()
+        };
+        self.epochs.push((kept, self.images));
         self.refresh_resume(model);
         self.flush();
     }
@@ -277,6 +291,46 @@ mod tests {
         assert_eq!(s.activity.spikes, 15.0, "test images are not averaged in");
         let p = s.progress_record().unwrap();
         assert_eq!(p.activity, s.activity);
+    }
+
+    #[test]
+    fn late_viewers_get_the_latest_confusion_once() {
+        let hub = Arc::new(Hub::new());
+        let mut s = Stream::new(hub.clone());
+        let epoch = |n: usize, hits: u8| {
+            let mut c = Confusion::new(2);
+            (0..hits).for_each(|_| c.record(1, Some(1)));
+            EpochResult {
+                epoch: n,
+                train_accuracy: 0.5,
+                test_accuracy: Some(c.accuracy()),
+                images_per_sec: 1.0,
+                activity: PerImage::default(),
+                confusion: Some(c),
+            }
+        };
+        s.epoch_end(&epoch(0, 3), &[]);
+        s.epoch_end(&epoch(1, 5), &[]);
+        let intro = hub.join().intro();
+        let kinds: Vec<Vec<u8>> = intro
+            .iter()
+            .map(|p| frame::records(p).iter().map(|r| r.0).collect())
+            .collect();
+        let confusions = kinds
+            .concat()
+            .iter()
+            .filter(|&&k| k == frame::CONFUSION)
+            .count();
+        assert_eq!(confusions, 1);
+        let resume = &intro[intro.len() - 1];
+        let (_, p) = frame::records(resume)
+            .into_iter()
+            .find(|r| r.0 == frame::CONFUSION)
+            .unwrap();
+        assert_eq!(
+            u32::from_le_bytes(p[1 + 4 * 4..1 + 5 * 4].try_into().unwrap()),
+            5
+        );
     }
 
     #[test]

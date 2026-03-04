@@ -1,6 +1,7 @@
 //! Shared building blocks for the spiking models: datasets, input coding,
 //! seeded randomness, weight files and run control.
 
+pub mod confusion;
 pub mod control;
 pub mod dataset;
 pub mod encode;
@@ -12,6 +13,7 @@ pub mod run;
 pub mod tune;
 pub mod weights;
 
+pub use confusion::Confusion;
 pub use control::{Control, Pacer};
 pub use dataset::Dataset;
 pub use encode::SpikeTrain;

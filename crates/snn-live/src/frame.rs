@@ -4,7 +4,7 @@
 //! Kinds below 16 are shared by every model, except 3, 4, 5 and 9 which belong
 //! to the winner-take-all model (mnist-snn-rs). Other models use 16 and up.
 
-use snn_core::{EpochResult, ImageInfo, PerImage};
+use snn_core::{Confusion, EpochResult, ImageInfo, PerImage};
 
 pub const META: u8 = 1;
 pub const IMAGE: u8 = 2;
@@ -14,6 +14,7 @@ pub const PROGRESS: u8 = 8;
 pub const HISTORY: u8 = 10;
 pub const PARAMS: u8 = 11;
 pub const POPS: u8 = 12;
+pub const CONFUSION: u8 = 13;
 pub const SERIES: u8 = 16;
 pub const SPIKES: u8 = 17;
 pub const PROBE: u8 = 18;
@@ -268,6 +269,14 @@ pub fn epoch(b: &mut Buf, e: &EpochResult, images: u64) {
     b.end();
 }
 
+/// Test answers per true class: the class count, then `classes + 1` counts per row.
+pub fn confusion(b: &mut Buf, c: &Confusion) {
+    b.begin(CONFUSION);
+    b.u8(c.classes() as u8);
+    c.counts().iter().for_each(|&n| b.u32(n));
+    b.end();
+}
+
 pub fn state(b: &mut Buf, paused: bool, speed: u32, done: bool) {
     b.begin(STATE);
     b.u8(paused as u8);
@@ -468,6 +477,7 @@ mod tests {
                 spikes: 12.0,
                 synops: 3400.0,
             },
+            confusion: None,
         };
         epoch(&mut b, &e, 7);
         let bytes = b.take();
@@ -484,6 +494,24 @@ mod tests {
         );
         assert_eq!(r[1].1.len(), 30);
         assert!(b.is_empty());
+    }
+
+    #[test]
+    fn confusion_record_layout() {
+        let mut c = Confusion::new(2);
+        c.record(0, Some(0));
+        c.record(1, Some(0));
+        c.record(1, None);
+        let mut b = Buf::new();
+        confusion(&mut b, &c);
+        let bytes = b.take();
+        let (kind, p) = records(&bytes)[0];
+        assert_eq!((kind, p[0], p.len()), (CONFUSION, 2, 1 + 2 * 3 * 4));
+        let counts: Vec<u32> = p[1..]
+            .chunks(4)
+            .map(|n| u32::from_le_bytes(n.try_into().unwrap()))
+            .collect();
+        assert_eq!(counts, [1, 0, 0, 1, 0, 1]);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! What every trainer reports: the image being presented, finished epochs and a
 //! running hit rate.
 
+use crate::confusion::Confusion;
 use crate::energy::{Activity, PerImage};
 use std::collections::VecDeque;
 
@@ -22,21 +23,35 @@ pub struct EpochResult {
     pub images_per_sec: f32,
     /// per training image of the epoch
     pub activity: PerImage,
+    /// the test pass, if there was one
+    pub confusion: Option<Confusion>,
 }
 
 /// What one pass over a dataset adds up to.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Pass {
     pub images: usize,
     pub hits: usize,
     pub activity: Activity,
+    pub confusion: Confusion,
 }
 
 impl Pass {
-    pub fn record(&mut self, correct: bool, activity: Activity) {
+    pub fn new(classes: usize) -> Self {
+        Self {
+            images: 0,
+            hits: 0,
+            activity: Activity::default(),
+            confusion: Confusion::new(classes),
+        }
+    }
+
+    /// Adds an image with its true class and the class the model answered.
+    pub fn record(&mut self, label: u8, answer: Option<u8>, activity: Activity) {
         self.images += 1;
-        self.hits += correct as usize;
+        self.hits += (answer == Some(label)) as usize;
         self.activity += activity;
+        self.confusion.record(label, answer);
     }
 
     pub fn accuracy(&self) -> f32 {
@@ -84,12 +99,14 @@ mod tests {
 
     #[test]
     fn pass_adds_up_hits_and_activity() {
-        let mut p = Pass::default();
+        let mut p = Pass::new(3);
         assert_eq!(p.accuracy(), 0.0);
-        p.record(true, Activity::new(10, 100));
-        p.record(false, Activity::new(30, 300));
-        p.record(true, Activity::new(20, 200));
+        p.record(1, Some(1), Activity::new(10, 100));
+        p.record(2, Some(0), Activity::new(30, 300));
+        p.record(0, Some(0), Activity::new(20, 200));
         assert!((p.accuracy() - 2.0 / 3.0).abs() < 1e-6);
+        assert_eq!(p.confusion.accuracy(), p.accuracy());
+        assert_eq!(p.confusion.recall(2), Some(0.0));
         assert_eq!(
             p.per_image(),
             PerImage {

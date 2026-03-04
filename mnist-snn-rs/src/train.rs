@@ -205,7 +205,7 @@ impl Trainer {
     ) -> Pass {
         let mut order: Vec<usize> = (0..data.len()).collect();
         self.rng.shuffle(&mut order);
-        let mut pass = Pass::default();
+        let mut pass = Pass::new(self.labels.classes());
         for (index, &i) in order.iter().enumerate() {
             if ctl.stopped() {
                 break;
@@ -218,7 +218,7 @@ impl Trainer {
                 learn: true,
             };
             let r = self.present(data, i, info, mon, ctl);
-            pass.record(r.correct, r.activity);
+            pass.record(r.info.label, r.predicted, r.activity);
         }
         pass
     }
@@ -231,7 +231,7 @@ impl Trainer {
         mon: &mut M,
         ctl: &Control,
     ) -> Pass {
-        let mut pass = Pass::default();
+        let mut pass = Pass::new(self.labels.classes());
         for i in 0..data.len() {
             if ctl.stopped() {
                 break;
@@ -244,7 +244,7 @@ impl Trainer {
                 learn: false,
             };
             let r = self.present(data, i, info, mon, ctl);
-            pass.record(r.correct, r.activity);
+            pass.record(r.info.label, r.predicted, r.activity);
         }
         pass
     }
@@ -280,16 +280,17 @@ impl Trainer {
             let t0 = Instant::now();
             let trained = self.train_epoch(train, epoch, mon, ctl);
             let images_per_sec = train.len() as f32 / t0.elapsed().as_secs_f32().max(1e-9);
-            let test_accuracy = test.map(|t| self.evaluate(t, epoch, mon, ctl).accuracy());
+            let tested = test.map(|t| self.evaluate(t, epoch, mon, ctl));
             if ctl.stopped() {
                 break;
             }
             let e = EpochResult {
                 epoch,
                 train_accuracy: trained.accuracy(),
-                test_accuracy,
+                test_accuracy: tested.as_ref().map(Pass::accuracy),
                 images_per_sec,
                 activity: trained.per_image(),
+                confusion: tested.map(|p| p.confusion),
             };
             mon.epoch_end(&e);
             out.push(e);
@@ -327,6 +328,9 @@ mod tests {
         assert!(acc > 0.4, "test accuracy {acc}");
         let a = r[0].activity;
         assert!(a.spikes > 0.0 && a.synops > a.spikes, "{a:?}");
+        let c = r[0].confusion.as_ref().unwrap();
+        assert_eq!((c.total(), c.classes()), (300, 10));
+        assert_eq!(Some(c.accuracy()), r[0].test_accuracy);
     }
 
     #[test]

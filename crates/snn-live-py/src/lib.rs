@@ -369,6 +369,7 @@ impl Live {
             test_accuracy,
             images_per_sec,
             activity: PerImage { spikes, synops },
+            confusion: None,
         });
     }
 

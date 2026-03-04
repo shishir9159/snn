@@ -87,6 +87,12 @@ th:first-child, td:first-child { text-align: left; }
 .truth { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--soft); }
 .badge { font: 600 15px var(--fh); letter-spacing: .08em; text-transform: uppercase; }
 .badge.ok { color: var(--good); } .badge.miss { color: var(--bad); }
+.link { cursor: pointer; }
+#cm { position: fixed; inset: 0; margin: auto; z-index: 6; width: min(620px, 94vw); height: min(580px, 88vh); background: var(--bg);
+  padding: 30px 18px 12px; display: none; flex-direction: column; gap: 8px; }
+#cm.open { display: flex; }
+#cm canvas { flex: 1; min-height: 0; cursor: crosshair; }
+#cm .hint { font-size: 12px; color: var(--soft); }
 #tip { position: fixed; pointer-events: none; z-index: 10; padding: 6px 10px; background: var(--bg); border: 1px solid var(--divider);
   font-size: 12px; color: var(--soft); display: none; white-space: nowrap; }
 #tip b { color: var(--text); font: 600 15px var(--fh); margin-right: 6px; }
@@ -103,7 +109,7 @@ th:first-child, td:first-child { text-align: left; }
 <div class="app">
   <header>
     <div class="stat hero"><span class="k">Running accuracy</span><span class="num" id="acc-v">–</span></div>
-    <div class="stat"><span class="k">Test accuracy</span><span class="num" id="test-v">–</span></div>
+    <div class="stat link" id="test-tile" tabindex="0" role="button" title="confusion matrix (C)"><span class="k">Test accuracy</span><span class="num" id="test-v">–</span></div>
     <div class="stat"><span class="k">Epoch</span><span class="num" id="epoch-v">–</span></div>
     <div class="stat"><span class="k">Image</span><span class="num" id="image-v">–</span></div>
     <div class="stat"><span class="k">Sim time</span><span class="num" id="clock-v">–</span></div>
@@ -138,6 +144,11 @@ th:first-child, td:first-child { text-align: left; }
 
   <div class="bp" id="bottom"></div>
 </div>
+<div class="bp" id="cm">
+  <span class="k">Test confusion · label ↓ answer →</span>
+  <canvas id="cm-c"></canvas>
+  <div class="hint">Cells are shares of each label's images · – is no answer · C or Esc closes</div>
+</div>
 <div id="tip"></div>
 <div id="conn">disconnected · retrying</div>
 
@@ -154,7 +165,7 @@ const NONE = 255;
 const S = {
   meta: null, nIn: 0, T: 200, side: 28, params: [], paramTitle: "", pops: [], floor: -Infinity,
   img: null, label: -1, learn: true,
-  acc: [], tests: [], epochs: [], progress: null, state: { paused: false, speed: 1000, done: false },
+  acc: [], tests: [], epochs: [], confusion: null, progress: null, state: { paused: false, speed: 1000, done: false },
   hover: null, dirty: new Set(["all"]),
 };
 const dirty = (...k) => k.forEach((x) => S.dirty.add(x));
@@ -182,7 +193,7 @@ const H = {
       for (const id of ["firing", "center", "right", "bottom", "xstats"]) $(id).replaceChildren();
       if (view) { view.layout(); corners(document); }
     }
-    S.acc = []; S.tests = []; S.epochs = [];
+    S.acc = []; S.tests = []; S.epochs = []; S.confusion = null;
     renderEpochs(); dirty("all");
   },
   11(v, p) { // PARAMS
@@ -198,6 +209,12 @@ const H = {
     const floor = S.params.find((q) => q.name === "Floor");
     S.floor = floor ? floor.value : -Infinity;
     renderModel();
+  },
+  13(v, p) { // CONFUSION
+    const n = v.getUint8(p), counts = new Uint32Array(n * (n + 1));
+    for (let i = 0; i < counts.length; i++) counts[i] = v.getUint32(p + 1 + 4 * i, true);
+    S.confusion = { n, counts };
+    dirty("confusion");
   },
   12(v, p) { // POPS
     const n = v.getUint8(p);
@@ -399,6 +416,49 @@ $("acc").onpointermove = (e) => {
 };
 $("acc").onpointerleave = hideTip;
 
+// rows are true classes, columns the answers and a last one for no answer; shades are shares of the row
+let cmGeom = null;
+function drawConfusion() {
+  const g = fit($("cm-c")), c = S.confusion;
+  if (!g) return;
+  const { x, w, h } = g;
+  if (!c) { x.font = `15px ${FH}`; x.textAlign = "center"; x.fillStyle = G[2]; x.fillText("no test pass yet", w / 2, h / 2); cmGeom = null; return; }
+  const n = c.n, cols = n + 1, L0 = 26, R0 = 54, top = 22, cs = Math.min((w - L0 - R0) / cols, (h - top - 4) / n);
+  cmGeom = { c, L0, top, cs };
+  const rowSum = (r) => { let t = 0; for (let k = 0; k < cols; k++) t += c.counts[r * cols + k]; return t; };
+  x.font = `600 12px ${FH}`; x.textAlign = "center"; x.fillStyle = G[3];
+  for (let k = 0; k < cols; k++) x.fillText(k < n ? k : "–", L0 + (k + 0.5) * cs, top - 7);
+  for (let r = 0; r < n; r++) {
+    const tot = rowSum(r), y = top + r * cs;
+    x.textAlign = "right"; x.fillStyle = G[3]; x.fillText(r, L0 - 7, y + cs / 2 + 4);
+    for (let k = 0; k < cols; k++) {
+      const v = c.counts[r * cols + k], f = tot ? v / tot : 0;
+      x.fillStyle = k === r ? gb(0.1 + 0.9 * f) : k === n ? pa(0.7 * f) : `rgba(236,131,90,${Math.min(1, 1.6 * f)})`;
+      if (f > 0 || k === r) x.fillRect(L0 + k * cs + 1, y + 1, cs - 2, cs - 2);
+      if (v && cs >= 26) { x.font = `${k === r ? 600 : 400} ${Math.min(14, cs * 0.34)}px ${FH}`; x.textAlign = "center"; x.fillStyle = f > 0.5 ? G[9] : G.p; x.fillText(v, L0 + (k + 0.5) * cs, y + cs / 2 + 4); x.font = `600 12px ${FH}`; }
+    }
+    x.textAlign = "left"; x.fillStyle = G[2];
+    x.fillText(tot ? pctText(c.counts[r * cols + r] / tot) : "–", L0 + cols * cs + 8, y + cs / 2 + 4);
+  }
+}
+const cmOpen = () => $("cm").classList.contains("open");
+function toggleConfusion(on = !cmOpen()) { $("cm").classList.toggle("open", on); hideTip(); dirty("confusion"); }
+$("test-tile").onclick = () => toggleConfusion();
+addEventListener("keydown", (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "c" || e.key === "C") toggleConfusion();
+  else if (e.key === "Escape" && cmOpen()) toggleConfusion(false);
+});
+$("cm-c").onpointermove = (e) => {
+  if (!cmGeom) return;
+  const { c, L0, top, cs } = cmGeom, [mx, my] = local(e), col = Math.floor((mx - L0) / cs), row = Math.floor((my - top) / cs), cols = c.n + 1;
+  if (col < 0 || col >= cols || row < 0 || row >= c.n) return hideTip();
+  let tot = 0; for (let k = 0; k < cols; k++) tot += c.counts[row * cols + k];
+  const v = c.counts[row * cols + col];
+  showTip(e, `${row} → ${col < c.n ? col : "no answer"}`, ` · ${v.toLocaleString()} of ${tot.toLocaleString()} (${tot ? pctText(v / tot) : "–"})`);
+};
+$("cm-c").onpointerleave = hideTip;
+
 // blueprint corner marks on every panel
 function corners(root) {
   for (const el of root.querySelectorAll(".bp")) if (!el.querySelector(":scope > i")) for (let k = 0; k < 4; k++) el.prepend(document.createElement("i"));
@@ -412,6 +472,7 @@ function frame(now) {
     const all = S.dirty.has("all");
     if (view) view.frame(all);
     if (all || S.dirty.has("acc")) drawAcc();
+    if (cmOpen() && (all || S.dirty.has("confusion"))) drawConfusion();
     if (now - lastStats > 250) { renderStats(); lastStats = now; }
     S.dirty.clear();
   }
