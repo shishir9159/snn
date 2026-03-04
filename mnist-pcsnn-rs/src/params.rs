@@ -61,3 +61,42 @@ impl Params {
         self.t_max as usize
     }
 }
+
+snn_core::tunable!(Params {
+    "hidden" => hidden,
+    "t_max" => t_max,
+    "threshold" => threshold,
+    "gamma" => gamma,
+    "alpha" => alpha,
+    "sigma" => sigma,
+    "eta_hidden" => eta_hidden,
+    "eta_output" => eta_output,
+    "iterations" => iterations,
+    "infer_rate" => infer_rate,
+    "dropout" => dropout,
+    "revive_every" => revive_every,
+    "revive_below" => revive_below,
+    "init_hidden" => init_hidden,
+    "init_output" => init_output,
+});
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_name_reaches_a_field() {
+        let mut names = Params::KEYS.to_vec();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), Params::KEYS.len(), "a name appears twice");
+        for key in Params::KEYS {
+            Params::default().set(key, "1").unwrap();
+        }
+        let mut p = Params::default();
+        p.set("dropout", "0.25").unwrap();
+        p.set("iterations", "4").unwrap();
+        assert_eq!((p.dropout, p.iterations), (0.25, 4));
+        assert!(p.set("iterations", "-1").is_err());
+    }
+}

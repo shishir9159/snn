@@ -1,7 +1,7 @@
 use mnist_pcsnn::tap::Tap;
 use mnist_pcsnn::train::Trainer;
 use mnist_pcsnn::Params;
-use snn_core::{weights, Control};
+use snn_core::{weights, Control, Overrides};
 use snn_live::app::{self, Args, Printer};
 use snn_live::frame::{self, Buf, Meta, Param, Pop, Role};
 use std::path::PathBuf;
@@ -10,17 +10,19 @@ use std::process::ExitCode;
 const USAGE: &str = "  --hidden N         hidden neurons (default 200)
   --fields-png FILE  save hidden receptive fields as an image";
 
+#[derive(Debug)]
 struct Opts {
     params: Params,
     fields_png: Option<PathBuf>,
 }
 
-fn parse_args() -> Result<(Args, Opts), String> {
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Args, Opts), String> {
     let mut o = Opts {
         params: Params::default(),
         fields_png: None,
     };
-    let a = Args::parse(std::env::args().skip(1), |flag, val| {
+    let mut set = Overrides::default();
+    let a = Args::parse(args, |flag, val| {
         match flag {
             "--hidden" => {
                 let n: usize = val
@@ -29,10 +31,11 @@ fn parse_args() -> Result<(Args, Opts), String> {
                 o.params.hidden = n.max(1);
             }
             "--fields-png" => o.fields_png = Some(val.into()),
-            _ => return Ok(false),
+            _ => return set.flag(flag, val),
         }
         Ok(true)
     })?;
+    set.apply(|k, v| o.params.set(k, v))?;
     Ok((a, o))
 }
 
@@ -117,13 +120,17 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    let (args, opts) = match parse_args() {
+    let (args, opts) = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
             if !e.is_empty() {
                 eprintln!("{e}");
             }
-            eprintln!("usage: mnist-pcsnn-rs [options]\n{}\n{USAGE}", app::USAGE);
+            eprintln!(
+                "usage: mnist-pcsnn-rs [options]\n{}\n{USAGE}\n{}",
+                app::USAGE,
+                Overrides::usage(Params::KEYS)
+            );
             return ExitCode::from(2);
         }
     };
@@ -133,5 +140,35 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<(Args, Opts), String> {
+        parse_args(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn model_flags_and_set() {
+        let (_, o) = parse(&["--hidden", "64", "--fields-png", "f.png"]).unwrap();
+        assert_eq!(o.params.hidden, 64);
+        assert_eq!(o.fields_png, Some("f.png".into()));
+        let (_, o) = parse(&[
+            "--set",
+            "dropout=0.3",
+            "--hidden",
+            "10",
+            "--set",
+            "hidden=20",
+        ])
+        .unwrap();
+        assert_eq!((o.params.dropout, o.params.hidden), (0.3, 20));
+        assert!(parse(&["--hidden", "x"]).is_err());
+        assert!(parse(&["--set", "dropout=lots"])
+            .unwrap_err()
+            .contains("bad value"));
     }
 }

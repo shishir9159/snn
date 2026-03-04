@@ -89,3 +89,57 @@ impl Default for Params {
         }
     }
 }
+
+snn_core::tunable!(Params {
+    "rf" => rf,
+    "stride" => stride,
+    "features" => features,
+    "complex_rf" => complex_rf,
+    "complex_features" => complex_features,
+    "lateral_range" => lateral_range,
+    "tau_m" => tau_m,
+    "complex_tau_m" => complex_tau_m,
+    "v_thr" => v_thr,
+    "complex_thr" => complex_thr,
+    "v_reset" => v_reset,
+    "v_min" => v_min,
+    "eta_rp" => eta_rp,
+    "tau_rp" => tau_rp,
+    "w_static" => w_static,
+    "complex_w_static" => complex_w_static,
+    "ltp" => ltp,
+    "ltd" => ltd,
+    "tau_ltp" => tau_ltp,
+    "tau_ltd" => tau_ltd,
+    "i_ltp" => i_ltp,
+    "i_ltd" => i_ltd,
+    "c_ltp" => c_ltp,
+    "c_ltd" => c_ltd,
+    "c_win" => c_win,
+    "norm_exc" => norm_exc,
+    "norm_lateral" => norm_lateral,
+    "norm_top_down" => norm_top_down,
+    "norm_complex" => norm_complex,
+    "readout_rate" => readout_rate,
+});
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_name_reaches_a_field() {
+        let mut names = Params::KEYS.to_vec();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), Params::KEYS.len(), "a name appears twice");
+        for key in Params::KEYS {
+            Params::default().set(key, "1").unwrap();
+        }
+        let mut p = Params::default();
+        p.set("v_thr", "12.5").unwrap();
+        p.set("features", "8").unwrap();
+        assert_eq!((p.v_thr, p.features), (12.5, 8));
+        assert!(p.set("features", "many").is_err());
+    }
+}

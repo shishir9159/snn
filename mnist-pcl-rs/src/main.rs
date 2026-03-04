@@ -1,23 +1,25 @@
 use mnist_pcl::tap::Tap;
 use mnist_pcl::train::Trainer;
 use mnist_pcl::Params;
-use snn_core::Control;
+use snn_core::{Control, Overrides};
 use snn_live::app::{self, Args, Printer};
 use snn_live::frame::{self, Buf, Meta, Param, Pop, Role};
 use std::process::ExitCode;
 
 const USAGE: &str = "  --no-inhibition    switch plastic lateral and top-down inhibition off";
 
-fn parse_args() -> Result<(Args, Params), String> {
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Args, Params), String> {
     let mut p = Params::default();
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = args.into_iter().collect();
     // the one flag without a value
     if let Some(i) = args.iter().position(|a| a == "--no-inhibition") {
         args.remove(i);
         p.norm_lateral = 1e-3;
         p.norm_top_down = 1e-3;
     }
-    let a = Args::parse(args, |_, _| Ok(false))?;
+    let mut set = Overrides::default();
+    let a = Args::parse(args, |flag, val| set.flag(flag, val))?;
+    set.apply(|k, v| p.set(k, v))?;
     Ok((a, p))
 }
 
@@ -92,13 +94,17 @@ fn run(a: Args, p: Params) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    let (args, params) = match parse_args() {
+    let (args, params) = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
             if !e.is_empty() {
                 eprintln!("{e}");
             }
-            eprintln!("usage: mnist-pcl-rs [options]\n{}\n{USAGE}", app::USAGE);
+            eprintln!(
+                "usage: mnist-pcl-rs [options]\n{}\n{USAGE}\n{}",
+                app::USAGE,
+                Overrides::usage(Params::KEYS)
+            );
             return ExitCode::from(2);
         }
     };
@@ -108,5 +114,30 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<(Args, Params), String> {
+        parse_args(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn no_inhibition_and_set() {
+        let defaults = Params::default();
+        let (a, p) = parse(&["--headless", "--set", "v_thr=12"]).unwrap();
+        assert!(a.headless);
+        assert_eq!((p.v_thr, p.norm_lateral), (12.0, defaults.norm_lateral));
+        let (_, p) = parse(&["--no-inhibition"]).unwrap();
+        assert_eq!((p.norm_lateral, p.norm_top_down), (1e-3, 1e-3));
+        let (_, p) = parse(&["--set", "norm_lateral=5", "--no-inhibition"]).unwrap();
+        assert_eq!((p.norm_lateral, p.norm_top_down), (5.0, 1e-3), "--set wins");
+        assert!(parse(&["--set", "stride=0.5"]).is_err());
+        assert!(parse(&["--bogus", "1"])
+            .unwrap_err()
+            .contains("unknown option"));
     }
 }

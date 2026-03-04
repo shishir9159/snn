@@ -80,3 +80,44 @@ impl Params {
         1.0 - self.dt / self.tau_tr
     }
 }
+
+snn_core::tunable!(Params {
+    "dt" => dt,
+    "present" => present,
+    "tau_m" => tau_m,
+    "tau_j" => tau_j,
+    "tau_tr" => tau_tr,
+    "kappa" => kappa,
+    "gamma" => gamma,
+    "resistance" => resistance,
+    "v_thr" => v_thr,
+    "t_ref" => t_ref,
+    "alpha" => alpha,
+    "beta" => beta,
+    "norm" => norm,
+    "max_rate" => max_rate,
+    "target_rate" => target_rate,
+    "theta_rate" => theta_rate,
+    "readout_rate" => readout_rate,
+});
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_name_reaches_a_field() {
+        let mut names = Params::KEYS.to_vec();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), Params::KEYS.len(), "a name appears twice");
+        for key in Params::KEYS {
+            Params::default().set(key, "1").unwrap();
+        }
+        let mut p = Params::default();
+        p.set("alpha", "0.01").unwrap();
+        p.set("present", "100").unwrap();
+        assert_eq!((p.alpha, p.steps()), (0.01, 100));
+        assert!(p.set("layers", "10").is_err(), "layers has its own flag");
+    }
+}

@@ -8,6 +8,7 @@ pub mod events;
 pub mod readout;
 pub mod rng;
 pub mod run;
+pub mod tune;
 pub mod weights;
 
 pub use control::{Control, Pacer};
@@ -16,3 +17,4 @@ pub use encode::SpikeTrain;
 pub use readout::Readout;
 pub use rng::Rng;
 pub use run::{EpochResult, ImageInfo, Recent};
+pub use tune::Overrides;

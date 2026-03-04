@@ -2,7 +2,7 @@ use mnist_snn::tap::Tap;
 use mnist_snn::train::Trainer;
 use mnist_snn::{Layer, Params};
 use snn_core::weights::{self, Files};
-use snn_core::{Control, Dataset, Rng};
+use snn_core::{Control, Dataset, Overrides, Rng};
 use snn_live::app::{self, Args, Printer};
 use snn_live::frame::{Meta, Param, Pop, Role};
 use std::path::PathBuf;
@@ -16,6 +16,7 @@ struct Opts {
     outputs: usize,
     files: Files,
     weights_png: Option<PathBuf>,
+    params: Params,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Args, Opts), String> {
@@ -23,7 +24,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Args, Opts), St
         outputs: 40,
         files: Files::default(),
         weights_png: None,
+        params: Params::default(),
     };
+    let mut set = Overrides::default();
     let a = Args::parse(args, |flag, val| {
         match flag {
             "--outputs" => {
@@ -33,10 +36,11 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Args, Opts), St
                 o.outputs = n.max(1);
             }
             "--weights-png" => o.weights_png = Some(val.into()),
-            _ => return Ok(o.files.flag(flag, val)),
+            _ => return Ok(o.files.flag(flag, val) || set.flag(flag, val)?),
         }
         Ok(true)
     })?;
+    set.apply(|k, v| o.params.set(k, v))?;
     Ok((a, o))
 }
 
@@ -95,7 +99,7 @@ fn model_params(p: &Params) -> Vec<Param<'static>> {
 
 fn run(a: Args, o: Opts) -> Result<(), String> {
     let (train, test) = app::load_data(&a)?;
-    let params = Params::default();
+    let params = o.params.clone();
     let classes = train.classes.max(test.classes);
     let mut trainer = build_trainer(&a, &o, &params, &train, classes)?;
     let epochs = a.epochs();
@@ -149,9 +153,10 @@ fn main() -> ExitCode {
                 eprintln!("{e}");
             }
             eprintln!(
-                "usage: mnist-snn-rs [options]\n{}\n{USAGE}\n{}",
+                "usage: mnist-snn-rs [options]\n{}\n{USAGE}\n{}\n{}",
                 app::USAGE,
-                Files::USAGE
+                Files::USAGE,
+                Overrides::usage(Params::KEYS)
             );
             return ExitCode::from(2);
         }
@@ -197,6 +202,50 @@ mod tests {
             .contains("bad value"));
         assert!(parse(&["--bogus", "1"]).unwrap_err().contains("unknown"));
         assert_eq!(parse(&["--outputs", "0"]).unwrap().1.outputs, 1);
+    }
+
+    #[test]
+    fn set_overrides_constants_whatever_the_order() {
+        let (_, o) = parse(&["--set", "leak=0.4", "--outputs", "8", "--set", "w_max=3"]).unwrap();
+        assert_eq!(
+            (o.params.lif.leak, o.params.stdp.w_max, o.outputs),
+            (0.4, 3.0, 8)
+        );
+        let (_, o) = parse(&["--set", "leak=0.4", "--set", "leak=0.5"]).unwrap();
+        assert_eq!(o.params.lif.leak, 0.5, "the last one wins");
+        assert!(parse(&["--set", "leek=1"])
+            .unwrap_err()
+            .contains("unknown parameter leek"));
+        assert!(parse(&["--set", "leak=fast"])
+            .unwrap_err()
+            .contains("bad value"));
+        assert!(parse(&["--set", "leak"])
+            .unwrap_err()
+            .contains("name=value"));
+    }
+
+    #[test]
+    fn overridden_constants_change_the_run() {
+        let train = |extra: &[&str]| {
+            let mut args = vec![
+                "--headless",
+                "--train",
+                "300",
+                "--test",
+                "60",
+                "--outputs",
+                "10",
+            ];
+            args.extend(extra);
+            let (a, o) = parse(&args).unwrap();
+            let (train, test) = app::load_data(&a).unwrap();
+            let mut t = build_trainer(&a, &o, &o.params, &train, 10).unwrap();
+            t.fit(&train, Some(&test), 1, &mut (), &Control::new(0))
+                .remove(0)
+                .train_accuracy
+        };
+        assert_eq!(train(&[]), train(&[]), "same constants, same run");
+        assert_ne!(train(&[]), train(&["--set", "sigma=0.02"]));
     }
 
     #[test]

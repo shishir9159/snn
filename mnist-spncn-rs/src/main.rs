@@ -1,7 +1,7 @@
 use mnist_spncn::tap::Tap;
 use mnist_spncn::train::Trainer;
 use mnist_spncn::Params;
-use snn_core::{weights, Control};
+use snn_core::{weights, Control, Overrides};
 use snn_live::app::{self, Args, Printer};
 use snn_live::frame::{self, Buf, Meta, Param, Pop, Role};
 use std::path::PathBuf;
@@ -11,17 +11,19 @@ const USAGE: &str = "  --layers N,N       latent layer sizes, bottom up (default
   --dt MS            integration step in ms (default 1; paper 0.25)
   --fields-png FILE  save layer-1 generative fields as an image";
 
+#[derive(Debug)]
 struct Opts {
     params: Params,
     fields_png: Option<PathBuf>,
 }
 
-fn parse_args() -> Result<(Args, Opts), String> {
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Args, Opts), String> {
     let mut o = Opts {
         params: Params::default(),
         fields_png: None,
     };
-    let a = Args::parse(std::env::args().skip(1), |flag, val| {
+    let mut set = Overrides::default();
+    let a = Args::parse(args, |flag, val| {
         let bad = || format!("{flag}: bad value {val}");
         match flag {
             "--layers" => {
@@ -33,10 +35,11 @@ fn parse_args() -> Result<(Args, Opts), String> {
             }
             "--dt" => o.params.dt = val.parse().map_err(|_| bad())?,
             "--fields-png" => o.fields_png = Some(val.into()),
-            _ => return Ok(false),
+            _ => return set.flag(flag, val),
         }
         Ok(true)
     })?;
+    set.apply(|k, v| o.params.set(k, v))?;
     Ok((a, o))
 }
 
@@ -120,13 +123,17 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    let (args, opts) = match parse_args() {
+    let (args, opts) = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
             if !e.is_empty() {
                 eprintln!("{e}");
             }
-            eprintln!("usage: mnist-spncn-rs [options]\n{}\n{USAGE}", app::USAGE);
+            eprintln!(
+                "usage: mnist-spncn-rs [options]\n{}\n{USAGE}\n{}",
+                app::USAGE,
+                Overrides::usage(Params::KEYS)
+            );
             return ExitCode::from(2);
         }
     };
@@ -136,5 +143,31 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<(Args, Opts), String> {
+        parse_args(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn model_flags_and_set() {
+        let (_, o) = parse(&["--layers", "30,10", "--dt", "2", "--fields-png", "f.png"]).unwrap();
+        assert_eq!((o.params.layers, o.params.dt), (vec![30, 10], 2.0));
+        assert_eq!(o.fields_png, Some("f.png".into()));
+        let (_, o) = parse(&["--set", "alpha=0.01", "--dt", "2", "--set", "dt=0.5"]).unwrap();
+        assert_eq!(
+            (o.params.alpha, o.params.dt),
+            (0.01, 0.5),
+            "--set applies last"
+        );
+        assert!(parse(&["--layers", "30,0"]).is_err());
+        assert!(parse(&["--set", "layers=3"])
+            .unwrap_err()
+            .contains("unknown parameter"));
     }
 }

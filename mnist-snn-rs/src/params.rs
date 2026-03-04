@@ -96,3 +96,55 @@ impl Default for Params {
         }
     }
 }
+
+snn_core::tunable!(Params {
+    "time_steps" => time_steps,
+    "threshold_div" => threshold_div,
+    "silent_penalty" => silent_penalty,
+    "w_norm" => w_norm,
+    "theta_rate" => theta_rate,
+    "rest" => lif.rest,
+    "floor" => lif.floor,
+    "leak" => lif.leak,
+    "t_ref" => lif.t_ref,
+    "a_plus" => stdp.a_plus,
+    "a_minus" => stdp.a_minus,
+    "tau_plus" => stdp.tau_plus,
+    "tau_minus" => stdp.tau_minus,
+    "t_back" => stdp.t_back,
+    "t_fore" => stdp.t_fore,
+    "sigma" => stdp.sigma,
+    "w_min" => stdp.w_min,
+    "w_max" => stdp.w_max,
+    "pot_min" => encode.pot_min,
+    "pot_max" => encode.pot_max,
+    "freq_min" => encode.freq_min,
+    "freq_max" => encode.freq_max,
+    "period_scale" => encode.period_scale,
+});
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_name_reaches_a_field() {
+        let mut names = Params::KEYS.to_vec();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), Params::KEYS.len(), "a name appears twice");
+        for key in Params::KEYS {
+            Params::default().set(key, "1").unwrap();
+        }
+        let mut p = Params::default();
+        p.set("leak", "0.4").unwrap();
+        p.set("a_plus", "0.9").unwrap();
+        p.set("freq_max", "30").unwrap();
+        assert_eq!(
+            (p.lif.leak, p.stdp.a_plus, p.encode.freq_max),
+            (0.4, 0.9, 30.0)
+        );
+        assert!(p.set("leek", "1").is_err());
+        assert!(p.set("t_ref", "1.5").is_err());
+    }
+}
