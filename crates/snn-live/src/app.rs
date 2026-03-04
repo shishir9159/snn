@@ -3,6 +3,7 @@
 
 use crate::{frame, server, Hub};
 use snn_core::dataset::{self, Dataset};
+use snn_core::energy::compact;
 use snn_core::{Control, EpochResult, ImageInfo, Rng};
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::path::PathBuf;
@@ -166,8 +167,18 @@ impl Printer {
         let test = e
             .test_accuracy
             .map_or("-".into(), |a| format!("{:.1}%", a * 100.0));
+        let a = e.activity;
+        let events = if a.synops > 0.0 {
+            format!(
+                "  {} spikes {} synops / img",
+                compact(a.spikes),
+                compact(a.synops)
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "epoch {} done: train {:.1}%  test {}  ({:.0} img/s)",
+            "epoch {} done: train {:.1}%  test {}  ({:.0} img/s){events}",
             e.epoch + 1,
             e.train_accuracy * 100.0,
             test,

@@ -1,6 +1,7 @@
 //! What every trainer reports: the image being presented, finished epochs and a
 //! running hit rate.
 
+use crate::energy::{Activity, PerImage};
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy)]
@@ -19,6 +20,32 @@ pub struct EpochResult {
     pub train_accuracy: f32,
     pub test_accuracy: Option<f32>,
     pub images_per_sec: f32,
+    /// per training image of the epoch
+    pub activity: PerImage,
+}
+
+/// What one pass over a dataset adds up to.
+#[derive(Debug, Clone, Default)]
+pub struct Pass {
+    pub images: usize,
+    pub hits: usize,
+    pub activity: Activity,
+}
+
+impl Pass {
+    pub fn record(&mut self, correct: bool, activity: Activity) {
+        self.images += 1;
+        self.hits += correct as usize;
+        self.activity += activity;
+    }
+
+    pub fn accuracy(&self) -> f32 {
+        self.hits as f32 / self.images.max(1) as f32
+    }
+
+    pub fn per_image(&self) -> PerImage {
+        self.activity.per_image(self.images)
+    }
 }
 
 /// Hit rate over the most recent `cap` results.
@@ -54,6 +81,23 @@ impl Recent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pass_adds_up_hits_and_activity() {
+        let mut p = Pass::default();
+        assert_eq!(p.accuracy(), 0.0);
+        p.record(true, Activity::new(10, 100));
+        p.record(false, Activity::new(30, 300));
+        p.record(true, Activity::new(20, 200));
+        assert!((p.accuracy() - 2.0 / 3.0).abs() < 1e-6);
+        assert_eq!(
+            p.per_image(),
+            PerImage {
+                spikes: 20.0,
+                synops: 200.0
+            }
+        );
+    }
 
     #[test]
     fn recent_forgets_old_results() {

@@ -46,7 +46,7 @@ impl Tap {
     pub fn series(depth: usize) -> (Vec<String>, [&'static str; 3], [&'static str; 2]) {
         let sup = ["⁰", "¹", "²", "³", "⁴", "⁵"];
         let step = (0..depth).map(|l| format!("e{}", sup[l.min(5)])).collect();
-        (step, ["V_m", "J", "z"], ["unexplained", "spikes / img"])
+        (step, ["V_m", "J", "z"], ["unexplained", "latent spikes"])
     }
 
     // the requested neuron if it exists, else the busiest layer-1 unit
@@ -157,6 +157,7 @@ impl Monitor for Tap {
             scores: &r.probs,
             spikes: &spikes,
             scalars: &[r.unexplained, latent as f32],
+            activity: r.activity,
         };
         let (w, h) = self.side;
         let settled = &self.settled;

@@ -145,7 +145,7 @@ impl Monitor for Tap {
     }
 
     fn image_end(&mut self, r: &ImageResult, layer: &Layer, labels: &Labels) {
-        self.s.end_image(&r.info, r.running_accuracy);
+        self.s.end_image(&r.info, r.running_accuracy, r.activity);
         let viewers = self.s.viewers();
         let resume_due = self.s.resume_due();
         let send_weights = viewers && self.last_weights.elapsed() >= WEIGHTS_GAP;

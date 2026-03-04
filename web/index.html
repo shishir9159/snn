@@ -108,6 +108,8 @@ th:first-child, td:first-child { text-align: left; }
     <div class="stat"><span class="k">Image</span><span class="num" id="image-v">–</span></div>
     <div class="stat"><span class="k">Sim time</span><span class="num" id="clock-v">–</span></div>
     <div class="stat"><span class="k">Images / s</span><span class="num" id="ips-v">–</span></div>
+    <div class="stat"><span class="k">Spikes / img</span><span class="num" id="spk-v">–</span></div>
+    <div class="stat" title="synaptic operations: each spike counted once per synapse it reaches"><span class="k">SynOps / img</span><span class="num" id="syn-v">–</span></div>
     <div id="xstats" style="display:contents"></div>
     <div class="spacer"></div>
     <div class="seg" id="speed" role="radiogroup" aria-label="Simulation speed"></div>
@@ -125,7 +127,7 @@ th:first-child, td:first-child { text-align: left; }
         <div class="k">Accuracy</div>
         <div style="flex:1;min-height:90px"><canvas id="acc"></canvas></div>
         <div class="legend"><span class="ln">running</span><span class="dt">test</span></div>
-        <table><thead><tr><th>Epoch</th><th>Train</th><th>Test</th></tr></thead><tbody id="epochs"></tbody></table>
+        <table><thead><tr><th>Epoch</th><th>Train</th><th>Test</th><th>SynOps</th></tr></thead><tbody id="epochs"></tbody></table>
       </div>
     </div>
 
@@ -215,7 +217,7 @@ const H = {
     if (view && view.image) view.image();
   },
   6(v, p) { // EPOCH
-    const e = { epoch: v.getUint16(p, true) + 1, train: v.getFloat32(p + 2, true), test: v.getFloat32(p + 6, true), images: v.getFloat64(p + 14, true) };
+    const e = { epoch: v.getUint16(p, true) + 1, train: v.getFloat32(p + 2, true), test: v.getFloat32(p + 6, true), images: v.getFloat64(p + 14, true), synops: v.getFloat32(p + 26, true) };
     if (S.epochs.some((x) => x.epoch === e.epoch)) return;
     S.epochs.push(e);
     if (!Number.isNaN(e.test)) S.tests.push([e.images, e.test]);
@@ -227,7 +229,8 @@ const H = {
   },
   8(v, p) { // PROGRESS
     const g = { epoch: v.getUint16(p, true), index: v.getUint32(p + 2, true), total: v.getUint32(p + 6, true), learn: v.getUint8(p + 10) === 1,
-      acc: v.getFloat32(p + 11, true), steps: v.getFloat64(p + 15, true), images: v.getFloat64(p + 23, true), ips: v.getFloat32(p + 31, true) };
+      acc: v.getFloat32(p + 11, true), steps: v.getFloat64(p + 15, true), images: v.getFloat64(p + 23, true), ips: v.getFloat32(p + 31, true),
+      spikes: v.getFloat32(p + 35, true), synops: v.getFloat32(p + 39, true) };
     S.progress = g;
     const last = S.acc[S.acc.length - 1];
     if (g.learn && g.images > 0 && (!last || last[0] < g.images)) {
@@ -281,7 +284,7 @@ function renderEpochs() {
   const pct = (x) => (Number.isNaN(x) ? "–" : (x * 100).toFixed(1) + "%");
   $("epochs").replaceChildren(...S.epochs.slice(-3).map((e) => {
     const tr = document.createElement("tr");
-    for (const c of [e.epoch, pct(e.train), pct(e.test)]) { const td = document.createElement("td"); td.textContent = c; tr.append(td); }
+    for (const c of [e.epoch, pct(e.train), pct(e.test), e.synops > 0 ? compact(e.synops) : "–"]) { const td = document.createElement("td"); td.textContent = c; tr.append(td); }
     return tr;
   }));
 }
@@ -310,7 +313,7 @@ function fmtTime(ms) {
   return (h ? `${h}:${String(m).padStart(2, "0")}` : m) + ":" + String(r).padStart(2, "0");
 }
 const pctText = (x) => (x * 100).toFixed(1) + "%";
-const compact = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "K" : String(n));
+const compact = (n) => (n >= 1e9 ? (n / 1e9).toFixed(1) + "G" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? Math.round(n / 1e3) + "K" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(Math.round(n)));
 
 function renderStats() {
   const g = S.progress, m = S.meta;
@@ -322,6 +325,8 @@ function renderStats() {
   $("image-v").textContent = `${(g.index + 1).toLocaleString()}/${g.total.toLocaleString()}`;
   $("clock-v").textContent = fmtTime(g.steps);
   $("ips-v").textContent = S.state.paused || S.state.done ? "0" : Math.round(g.ips).toLocaleString();
+  $("spk-v").textContent = g.synops > 0 ? compact(g.spikes) : "–";
+  $("syn-v").textContent = g.synops > 0 ? compact(g.synops) : "–";
   if (view && view.stats) view.stats();
 }
 

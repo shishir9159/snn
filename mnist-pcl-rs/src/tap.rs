@@ -38,7 +38,7 @@ impl Tap {
         (
             ["excitation", "inhibition"],
             ["V"],
-            ["spikes / img", "suppression"],
+            ["cell spikes", "suppression"],
         )
     }
 
@@ -144,6 +144,7 @@ impl Monitor for Tap {
             scores: &r.probs,
             spikes: &self.counts,
             scalars: &[spikes, r.suppression],
+            activity: r.activity,
         };
         let mut fields = Buf::new();
         self.fields(&mut fields, net);

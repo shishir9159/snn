@@ -3,16 +3,14 @@
 //! dashboard draws for any such model.
 
 use crate::frame::{self, Buf};
-use crate::stream::Series;
+use crate::stream::{Series, SMOOTH};
 use crate::{Hub, Stream};
-use snn_core::{Control, EpochResult, ImageInfo};
+use snn_core::{Activity, Control, EpochResult, ImageInfo};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Weight fields go out at most this often.
 const FIELDS_GAP: Duration = Duration::from_millis(250);
-/// Smoothing of per-image scalars, in images.
-const SMOOTH: f32 = 200.0;
 
 pub struct PopTap {
     pub s: Stream,
@@ -31,6 +29,7 @@ pub struct End<'a> {
     pub scores: &'a [f32],
     pub spikes: &'a [u32],
     pub scalars: &'a [f32],
+    pub activity: Activity,
 }
 
 impl PopTap {
@@ -102,7 +101,7 @@ impl PopTap {
         S: FnOnce(&mut Buf),
         F: FnOnce(&mut Buf),
     {
-        self.s.end_image(info, e.running_accuracy);
+        self.s.end_image(info, e.running_accuracy, e.activity);
         if info.learn {
             self.smooth(e.scalars);
         }
@@ -188,6 +187,7 @@ mod tests {
             scores: &[0.0, 1.0],
             spikes: &[4, 2],
             scalars: if scalar > 1.0 { &[2.0] } else { &[0.0] },
+            activity: Activity::new(6, 60),
         }
     }
 

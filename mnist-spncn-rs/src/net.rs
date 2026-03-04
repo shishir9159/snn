@@ -11,7 +11,7 @@
 
 use crate::lif::Lif;
 use crate::params::Params;
-use snn_core::{weights, Rng, SpikeTrain};
+use snn_core::{weights, Activity, Rng, SpikeTrain};
 
 #[derive(Debug, Clone)]
 pub struct Net {
@@ -175,6 +175,18 @@ impl Net {
         self.end(learn);
     }
 
+    /// Spikes of the last presentation and the synapses they reach: an input
+    /// spike reaches its error unit, a latent spike the units below it through
+    /// its prediction weights.
+    pub fn activity(&self, input_spikes: u64) -> Activity {
+        let mut a = Activity::fan(input_spikes, 1);
+        for (l, lat) in self.lat.iter().enumerate() {
+            let fired: u64 = lat.counts.iter().map(|&c| c as u64).sum();
+            a += Activity::fan(fired, self.sizes[l] as u64);
+        }
+        a
+    }
+
     /// Each latent unit's spike count this image, square-rooted to tame bursts.
     pub fn code(&self, out: &mut Vec<f32>) {
         out.clear();
@@ -303,6 +315,32 @@ mod tests {
         assert!(moved_any);
         // error weights got the same updates, so they still mirror W
         assert!((0..20).all(|j| net.alignment(j) > 0.999));
+    }
+
+    #[test]
+    fn activity_follows_spikes_through_their_fan_out() {
+        let mut net = Net::new(784, small(), &mut Rng::new(5));
+        let tr = encode(&bar(true), &net.p, 7);
+        net.reset();
+        let mut inputs = 0u64;
+        for t in 1..=tr.steps() {
+            net.step(t, &tr, true);
+            inputs += net.input.len() as u64;
+        }
+        let counts: Vec<u64> = net
+            .lat
+            .iter()
+            .map(|l| l.counts.iter().map(|&c| c as u64).sum())
+            .collect();
+        assert!(
+            inputs > 0 && counts[0] > 0,
+            "the bar drives the first layer"
+        );
+        let a = net.activity(inputs);
+        assert_eq!(a.spikes, inputs + counts[0] + counts[1]);
+        assert_eq!(a.synops, inputs + counts[0] * 784 + counts[1] * 20);
+        net.reset();
+        assert_eq!(net.activity(0), Activity::default());
     }
 
     #[test]

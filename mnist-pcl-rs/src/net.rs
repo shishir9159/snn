@@ -6,7 +6,7 @@
 //! something touches it.
 
 use crate::params::Params;
-use snn_core::{weights, Rng};
+use snn_core::{weights, Activity, Rng};
 
 const NEVER: i32 = -1_000_000;
 
@@ -103,6 +103,8 @@ pub struct Net {
     /// excitatory and inhibitory drive given to simple cells this step
     pub excitation: f32,
     pub inhibition: f32,
+    /// synapses reached by a spike since the last reset
+    synops: u64,
 }
 
 impl Net {
@@ -122,6 +124,7 @@ impl Net {
             fired_c: Vec::new(),
             excitation: 0.0,
             inhibition: 0.0,
+            synops: 0,
             side,
             n,
             m,
@@ -189,6 +192,15 @@ impl Net {
         self.in_last.fill(NEVER);
         self.fired_s.clear();
         self.fired_c.clear();
+        self.synops = 0;
+    }
+
+    /// The input events and the cells' spikes since the reset, and the synapses
+    /// they reached.
+    pub fn activity(&self, events: u64) -> Activity {
+        let cells = self.simple.counts.iter().chain(&self.complex.counts);
+        let spikes: u64 = cells.map(|&c| c as u64).sum();
+        Activity::new(events + spikes, self.synops)
     }
 
     /// Delivers the events of step `t` and everything they set off.
@@ -234,6 +246,7 @@ impl Net {
     }
 
     fn excite(&mut self, s: usize, t: u32, w: f32) {
+        self.synops += 1;
         let p = &self.p;
         let mut v = self.simple.at(s, t) + w;
         let last = self.simple.last[s];
@@ -250,6 +263,7 @@ impl Net {
     }
 
     fn inhibit_simple(&mut self, s: usize, t: u32, w: f32) {
+        self.synops += 1;
         let v = self.simple.at(s, t) - w;
         self.simple.v[s] = v.max(self.p.v_min);
         self.inhibition += w;
@@ -290,6 +304,7 @@ impl Net {
             let i = q as usize * k + f;
             for c in 0..kc {
                 let cell = (cy as usize * self.m + cx as usize) * kc + c;
+                self.synops += 1;
                 let v = self.complex.at(cell, t) + self.w_c[cell * cin + i];
                 if v >= self.p.complex_thr && self.complex.last[cell] != t as i32 {
                     self.complex.fire(cell, t, self.p.v_reset);
@@ -307,6 +322,7 @@ impl Net {
         let (cl, g) = (c / kc, c % kc);
         for h in (0..kc).filter(|&h| h != g) {
             let other = cl * kc + h;
+            self.synops += 1;
             let v = self.complex.at(other, t) - self.p.complex_w_static;
             self.complex.v[other] = v.max(self.p.v_min);
         }
@@ -485,6 +501,42 @@ mod tests {
         assert_eq!(net.complex.len(), 4 * 4 * 16);
         assert_eq!(covering(13, 10, 6, 5).collect::<Vec<_>>(), [1, 2]);
         assert_eq!(covering(33, 10, 6, 5).collect::<Vec<_>>(), [4]);
+    }
+
+    #[test]
+    fn one_event_reaches_every_feature_of_its_fields() {
+        let mut net = Net::new(34, Params::default(), &mut Rng::new(1));
+        net.reset();
+        // pixel (13, 13) lies in 2x2 simple-cell fields of 32 features each
+        net.step(1, &[13 * 34 + 13], false);
+        assert!(net.fired_s.is_empty());
+        assert_eq!(net.activity(1), Activity::new(1, 4 * 32));
+        net.reset();
+        assert_eq!(net.activity(0), Activity::default());
+    }
+
+    #[test]
+    fn spiking_cells_add_inhibition_and_complex_input() {
+        let p = Params {
+            v_thr: 8.0,
+            ..Params::default()
+        };
+        let mut net = Net::new(34, p, &mut Rng::new(2));
+        let ev = bar_events();
+        net.reset();
+        let mut events = 0u64;
+        for t in 1..=ev.steps() {
+            net.step(t as u32, ev.at(t), false);
+            events += ev.at(t).len() as u64;
+        }
+        let count = |c: &Cells| c.counts.iter().map(|&n| n as u64).sum::<u64>();
+        let (simple, complex) = (count(&net.simple), count(&net.complex));
+        assert!(simple > 0);
+        let a = net.activity(events);
+        assert_eq!(a.spikes, events + simple + complex);
+        // each event excites at least one field of 32 features, each simple spike
+        // inhibits the 31 other features at its location
+        assert!(a.synops >= events * 32 + simple * 31);
     }
 
     #[test]

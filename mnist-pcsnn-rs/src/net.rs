@@ -6,7 +6,7 @@
 //! postsynaptic one, by the postsynaptic error.
 
 use crate::params::Params;
-use snn_core::{weights, Rng};
+use snn_core::{weights, Activity, Rng};
 
 #[derive(Debug, Clone)]
 pub struct Net {
@@ -141,6 +141,17 @@ impl Net {
             &mut self.out_over,
         );
         self.decision()
+    }
+
+    /// Spikes of the forward pass and the synapses they reach: an input spike
+    /// drives every hidden neuron, a hidden spike every output.
+    pub fn activity(&self) -> Activity {
+        let t_max = self.p.t_max;
+        let inputs = self.t_in.iter().filter(|&&t| t < t_max).count() as u64;
+        let hidden = self.hid_pred.iter().filter(|&&t| t < t_max).count() as u64;
+        let outputs = self.out_fwd.iter().filter(|&&t| t < t_max).count() as u64;
+        let synops = inputs * self.p.hidden as u64 + hidden * self.classes as u64;
+        Activity::new(inputs + hidden + outputs, synops)
     }
 
     /// Output that fired first in the forward pass, if any fired; on a shared
@@ -361,6 +372,27 @@ mod tests {
         let mut net = Net::new(3, 2, p, &mut Rng::new(1));
         net.encode(&[255, 0, 128]);
         assert_eq!(net.t_in, vec![0.0, 256.0, 127.0]);
+    }
+
+    #[test]
+    fn activity_counts_forward_spikes_and_their_fan_out() {
+        let p = Params {
+            hidden: 20,
+            ..Params::default()
+        };
+        let mut rng = Rng::new(3);
+        let img = digit(4, &mut rng);
+        let mut net = Net::new(784, 10, p, &mut rng);
+        net.encode(&img);
+        net.drop_hidden(None);
+        net.forward();
+        let lit = img.iter().filter(|&&px| px > 0).count() as u64;
+        let hidden = net.hid_pred.iter().filter(|&&t| t < 256.0).count() as u64;
+        let outputs = net.out_fwd.iter().filter(|&&t| t < 256.0).count() as u64;
+        let a = net.activity();
+        assert!(lit > 0 && hidden > 0);
+        assert_eq!(a.spikes, lit + hidden + outputs);
+        assert_eq!(a.synops, lit * 20 + hidden * 10);
     }
 
     #[test]

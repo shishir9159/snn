@@ -4,6 +4,7 @@
 pub mod control;
 pub mod dataset;
 pub mod encode;
+pub mod energy;
 pub mod events;
 pub mod readout;
 pub mod rng;
@@ -14,7 +15,8 @@ pub mod weights;
 pub use control::{Control, Pacer};
 pub use dataset::Dataset;
 pub use encode::SpikeTrain;
+pub use energy::{Activity, PerImage};
 pub use readout::Readout;
 pub use rng::Rng;
-pub use run::{EpochResult, ImageInfo, Recent};
+pub use run::{EpochResult, ImageInfo, Pass, Recent};
 pub use tune::Overrides;

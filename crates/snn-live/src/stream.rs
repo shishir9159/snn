@@ -4,7 +4,7 @@
 
 use crate::frame::{self, Buf};
 use crate::hub::Hub;
-use snn_core::{EpochResult, ImageInfo};
+use snn_core::{Activity, EpochResult, ImageInfo, PerImage};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,8 @@ const STREAM_GAP: Duration = Duration::from_millis(33);
 const RESUME_GAP: Duration = Duration::from_millis(250);
 /// History points kept before halving the resolution.
 pub const HISTORY: usize = 2048;
+/// Images the running means of per-image figures span.
+pub const SMOOTH: f32 = 200.0;
 
 /// One history series, thinned by half whenever it fills up.
 #[derive(Debug, Clone, Default)]
@@ -50,6 +52,8 @@ pub struct Stream {
     pub sim_steps: u64,
     pub images: u64,
     progress: Option<(ImageInfo, f32)>,
+    /// running mean of the training images' activity
+    activity: PerImage,
     rate: (Instant, u64, f32),
     /// series 0 is running accuracy; models may add more
     pub history: Vec<Series>,
@@ -72,6 +76,7 @@ impl Stream {
             sim_steps: 0,
             images: 0,
             progress: None,
+            activity: PerImage::default(),
             rate: (Instant::now(), 0, 0.0),
             history: vec![Series::default()],
             epochs: Vec::new(),
@@ -159,14 +164,21 @@ impl Stream {
             sim_steps: self.sim_steps,
             images: self.images,
             images_per_sec: self.rate.2,
+            activity: self.activity,
         })
     }
 
-    /// Counts a finished presentation; training images extend the accuracy history.
-    pub fn end_image(&mut self, info: &ImageInfo, running_accuracy: f32) {
+    /// Counts a finished presentation; training images extend the accuracy
+    /// history and the running mean of activity.
+    pub fn end_image(&mut self, info: &ImageInfo, running_accuracy: f32, activity: Activity) {
         if info.learn {
             self.images += 1;
             self.history[0].record(self.images, running_accuracy);
+            let k = 1.0 / SMOOTH.min(self.images as f32);
+            let now = activity.per_image(1);
+            let mean = &mut self.activity;
+            mean.spikes += k * (now.spikes - mean.spikes);
+            mean.synops += k * (now.synops - mean.synops);
         }
         self.progress = Some((*info, running_accuracy));
     }
@@ -232,7 +244,7 @@ mod tests {
         for t in 1..=3 {
             s.step(40, t).u8(t as u8);
         }
-        s.end_image(&info(true), 0.5);
+        s.end_image(&info(true), 0.5, Activity::new(4, 40));
         s.flush();
         let packets = v.poll(Duration::ZERO);
         let r = frame::records(&packets[0]);
@@ -243,11 +255,36 @@ mod tests {
     }
 
     #[test]
+    fn activity_is_a_running_mean_of_training_images() {
+        let mut s = Stream::new(Arc::new(Hub::new()));
+        s.end_image(&info(true), 0.0, Activity::new(10, 100));
+        assert_eq!(
+            s.activity,
+            PerImage {
+                spikes: 10.0,
+                synops: 100.0
+            }
+        );
+        s.end_image(&info(true), 0.0, Activity::new(20, 300));
+        assert_eq!(
+            s.activity,
+            PerImage {
+                spikes: 15.0,
+                synops: 200.0
+            }
+        );
+        s.end_image(&info(false), 0.0, Activity::new(1000, 9000));
+        assert_eq!(s.activity.spikes, 15.0, "test images are not averaged in");
+        let p = s.progress_record().unwrap();
+        assert_eq!(p.activity, s.activity);
+    }
+
+    #[test]
     fn nothing_streams_without_viewers() {
         let hub = Arc::new(Hub::new());
         let mut s = Stream::new(hub.clone());
         assert!(!s.begin_image(&info(false), &[0; 4]));
-        s.end_image(&info(false), 0.0);
+        s.end_image(&info(false), 0.0, Activity::default());
         s.flush();
         assert_eq!(s.images, 0);
         assert!(hub.join().poll(Duration::ZERO).is_empty());

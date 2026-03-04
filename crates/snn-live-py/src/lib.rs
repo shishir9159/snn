@@ -9,7 +9,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
-use snn_core::{Control, EpochResult, ImageInfo, Pacer};
+use snn_core::{Activity, Control, EpochResult, ImageInfo, Pacer, PerImage};
 use snn_live::frame::{self, Buf, Param, Pop, Role};
 use snn_live::pop::End;
 use snn_live::{app, Hub, PopTap};
@@ -321,8 +321,8 @@ impl Live {
 
     /// Ends a presentation. `predicted` is None for no decision; `spikes` counts
     /// spikes per population; `scalars` are per-image metrics, smoothed into
-    /// history.
-    #[pyo3(signature = (info, predicted, correct, running_accuracy, scores, spikes, scalars = None))]
+    /// history; `synops` counts the synaptic operations the spikes caused.
+    #[pyo3(signature = (info, predicted, correct, running_accuracy, scores, spikes, scalars = None, synops = 0))]
     fn end_image(
         &mut self,
         py: Python<'_>,
@@ -333,6 +333,7 @@ impl Live {
         scores: PyBuffer<f32>,
         spikes: Vec<u32>,
         scalars: Option<PyBuffer<f32>>,
+        synops: u64,
     ) -> PyResult<()> {
         let scalars = scalars.as_ref().map_or(Ok(Vec::new()), |b| b.to_vec(py))?;
         let e = End {
@@ -342,6 +343,7 @@ impl Live {
             scores: &scores.to_vec(py)?,
             spikes: &spikes,
             scalars: &scalars,
+            activity: Activity::new(spikes.iter().map(|&s| s as u64).sum(), synops),
         };
         let fields = &self.fields;
         self.tap
@@ -350,19 +352,23 @@ impl Live {
         Ok(())
     }
 
-    #[pyo3(signature = (epoch, train_accuracy, test_accuracy = None, images_per_sec = 0.0))]
+    /// `spikes` and `synops` are per training image of the epoch.
+    #[pyo3(signature = (epoch, train_accuracy, test_accuracy = None, images_per_sec = 0.0, spikes = 0.0, synops = 0.0))]
     fn epoch_end(
         &mut self,
         epoch: usize,
         train_accuracy: f32,
         test_accuracy: Option<f32>,
         images_per_sec: f32,
+        spikes: f32,
+        synops: f32,
     ) {
         self.tap.epoch_end(&EpochResult {
             epoch,
             train_accuracy,
             test_accuracy,
             images_per_sec,
+            activity: PerImage { spikes, synops },
         });
     }
 

@@ -183,6 +183,7 @@ impl Monitor for Tap {
             scores: &scores,
             spikes: &self.counts,
             scalars: &[free, r.first_spike],
+            activity: r.activity,
         };
         let mut fields = Buf::new();
         self.fields(&mut fields, net);

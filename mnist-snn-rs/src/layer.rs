@@ -6,6 +6,7 @@ use crate::stdp::Stdp;
 use snn_core::encode::SpikeTrain;
 use snn_core::rng::Rng;
 use snn_core::weights;
+use snn_core::Activity;
 
 /// State after one simulated step, handed to an [`Observer`].
 pub struct Step<'a> {
@@ -31,8 +32,25 @@ pub struct Outcome {
     pub winner: Option<usize>,
     /// spikes per output neuron
     pub spikes: Vec<u32>,
+    /// spikes of the input train that were delivered
+    pub input_spikes: u32,
     /// threshold before homeostatic scaling
     pub base_threshold: f32,
+}
+
+impl Outcome {
+    /// Each input spike is added into the drive of every output, and the winner
+    /// inhibits the other outputs once.
+    pub fn activity(&self, n_out: usize) -> Activity {
+        let fired: u64 = self.spikes.iter().map(|&s| s as u64).sum();
+        let inhibited = if self.winner.is_some() {
+            n_out as u64 - 1
+        } else {
+            0
+        };
+        let input = self.input_spikes as u64;
+        Activity::new(input + fired, input * n_out as u64 + inhibited)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -121,12 +139,14 @@ impl Layer {
             n.reset(lif);
         }
         let mut spikes = vec![0u32; self.n_out];
+        let mut input_spikes = 0u32;
         let mut winner = None;
         let mut fired = std::mem::take(&mut self.fired);
 
         for t in 1..=train.steps() {
             let ti = t as i32;
             let active = train.active(t);
+            input_spikes += active.len() as u32;
             self.drive.fill(0.0);
             for &i in active {
                 let col = &self.by_input[i as usize * self.n_out..][..self.n_out];
@@ -197,6 +217,7 @@ impl Layer {
         Outcome {
             winner,
             spikes,
+            input_spikes,
             base_threshold: base,
         }
     }
@@ -272,6 +293,24 @@ mod tests {
         assert_eq!(out.winner, Some(1));
         assert!(out.spikes[1] > 0);
         assert_eq!(out.spikes[0] + out.spikes[2], 0);
+    }
+
+    #[test]
+    fn activity_counts_deliveries_and_inhibition() {
+        let p = Params::default();
+        let mut l = Layer::new(784, 4, &p, &mut Rng::new(1));
+        let tr = encode(&bar(true), &p);
+        let out = l.present(&tr, &p, false, &mut ());
+        let sent: usize = (1..=tr.steps()).map(|t| tr.active(t).len()).sum();
+        assert_eq!(out.input_spikes as usize, sent);
+        let a = out.activity(4);
+        let fired: u32 = out.spikes.iter().sum();
+        assert_eq!(a.spikes, (sent as u32 + fired) as u64);
+        let inhibition = if out.winner.is_some() { 3 } else { 0 };
+        assert_eq!(a.synops, (sent * 4 + inhibition) as u64);
+
+        let quiet = l.present(&encode(&[0; 784], &p), &p, false, &mut ());
+        assert_eq!(quiet.activity(4), Activity::default());
     }
 
     #[test]

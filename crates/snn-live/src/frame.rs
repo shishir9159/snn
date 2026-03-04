@@ -4,7 +4,7 @@
 //! Kinds below 16 are shared by every model, except 3, 4, 5 and 9 which belong
 //! to the winner-take-all model (mnist-snn-rs). Other models use 16 and up.
 
-use snn_core::{EpochResult, ImageInfo};
+use snn_core::{EpochResult, ImageInfo, PerImage};
 
 pub const META: u8 = 1;
 pub const IMAGE: u8 = 2;
@@ -263,6 +263,8 @@ pub fn epoch(b: &mut Buf, e: &EpochResult, images: u64) {
     b.f32(e.test_accuracy.unwrap_or(f32::NAN));
     b.f32(e.images_per_sec);
     b.f64(images as f64);
+    b.f32(e.activity.spikes);
+    b.f32(e.activity.synops);
     b.end();
 }
 
@@ -283,6 +285,8 @@ pub struct Progress {
     pub sim_steps: u64,
     pub images: u64,
     pub images_per_sec: f32,
+    /// smoothed over recent training images
+    pub activity: PerImage,
 }
 
 pub fn progress(b: &mut Buf, p: &Progress) {
@@ -295,6 +299,8 @@ pub fn progress(b: &mut Buf, p: &Progress) {
     b.f64(p.sim_steps as f64);
     b.f64(p.images as f64);
     b.f32(p.images_per_sec);
+    b.f32(p.activity.spikes);
+    b.f32(p.activity.synops);
     b.end();
 }
 
@@ -458,6 +464,10 @@ mod tests {
             train_accuracy: 0.5,
             test_accuracy: None,
             images_per_sec: 100.0,
+            activity: PerImage {
+                spikes: 12.0,
+                synops: 3400.0,
+            },
         };
         epoch(&mut b, &e, 7);
         let bytes = b.take();
@@ -467,6 +477,12 @@ mod tests {
         assert_eq!(r[1].0, EPOCH);
         assert!(f32::from_le_bytes(r[1].1[6..10].try_into().unwrap()).is_nan());
         assert_eq!(f64::from_le_bytes(r[1].1[14..22].try_into().unwrap()), 7.0);
+        assert_eq!(f32::from_le_bytes(r[1].1[22..26].try_into().unwrap()), 12.0);
+        assert_eq!(
+            f32::from_le_bytes(r[1].1[26..30].try_into().unwrap()),
+            3400.0
+        );
+        assert_eq!(r[1].1.len(), 30);
         assert!(b.is_empty());
     }
 

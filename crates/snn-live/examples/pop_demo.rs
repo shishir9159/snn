@@ -2,7 +2,7 @@
 //! working on views without training a model.
 //! usage: cargo run -p snn-live --example pop_demo -- [port]
 
-use snn_core::{dataset, Control, ImageInfo, Pacer, Rng};
+use snn_core::{dataset, Activity, Control, ImageInfo, Pacer, Rng};
 use snn_live::app::{self, Args};
 use snn_live::frame::{self, Buf, Meta, Param, Pop, Role};
 use snn_live::pop::End;
@@ -107,6 +107,7 @@ fn run(data: &dataset::Dataset, mut tap: PopTap, ctl: &Control) {
             scores: &scores,
             spikes: &spikes,
             scalars: &[rng.f32(), spikes.iter().sum::<u32>() as f32],
+            activity: Activity::fan(spikes.iter().map(|&s| s as u64).sum(), 100),
         };
         let units: Vec<u16> = (0..16).collect();
         let labels: Vec<Option<u8>> = (0..16).map(|k| Some(k as u8 % 10)).collect();

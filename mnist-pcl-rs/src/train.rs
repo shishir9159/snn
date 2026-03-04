@@ -4,7 +4,7 @@
 use crate::{Net, Params};
 use snn_core::events::{Events, Saccades};
 use snn_core::readout::{argmax, Readout};
-use snn_core::{Control, Dataset, EpochResult, ImageInfo, Pacer, Recent, Rng};
+use snn_core::{Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Recent, Rng};
 use snn_live::app::Printer;
 use std::time::Instant;
 
@@ -21,6 +21,7 @@ pub struct ImageResult {
     pub probs: Vec<f32>,
     /// share of the drive to simple cells that was inhibitory
     pub suppression: f32,
+    pub activity: Activity,
 }
 
 /// Receives training events. Every method defaults to a no-op.
@@ -116,8 +117,10 @@ impl Trainer {
         self.net.reset();
         mon.image_start(&info, img, &self.net);
         let (mut exc, mut inh) = (0.0, 0.0);
+        let mut events = 0u64;
         for t in 1..=self.events.steps() {
             let ev = self.events.at(t);
+            events += ev.len() as u64;
             self.net.step(t as u32, ev, info.learn);
             exc += self.net.excitation;
             inh += self.net.inhibition;
@@ -128,6 +131,7 @@ impl Trainer {
                 ctl.wait_while_paused();
             }
         }
+        let activity = self.net.activity(events);
         self.net.code(&mut self.code);
         self.readout.probs(&self.code, &mut self.probs);
         let predicted = argmax(&self.probs);
@@ -138,6 +142,7 @@ impl Trainer {
         }
         let r = ImageResult {
             info,
+            activity,
             predicted,
             correct,
             running_accuracy: self.recent.rate(),
@@ -148,17 +153,17 @@ impl Trainer {
         r
     }
 
-    /// One shuffled pass with learning; returns the epoch's accuracy.
+    /// One shuffled pass with learning.
     pub fn train_epoch<M: Monitor>(
         &mut self,
         data: &Dataset,
         epoch: usize,
         mon: &mut M,
         ctl: &Control,
-    ) -> f32 {
+    ) -> Pass {
         let mut order: Vec<usize> = (0..data.len()).collect();
         self.rng.shuffle(&mut order);
-        let mut hits = 0;
+        let mut pass = Pass::default();
         for (index, &i) in order.iter().enumerate() {
             if ctl.stopped() {
                 break;
@@ -170,20 +175,21 @@ impl Trainer {
                 label: data.label(i),
                 learn: true,
             };
-            hits += self.present(data, i, info, mon, ctl).correct as usize;
+            let r = self.present(data, i, info, mon, ctl);
+            pass.record(r.correct, r.activity);
         }
-        hits as f32 / data.len().max(1) as f32
+        pass
     }
 
-    /// Accuracy without learning.
+    /// A pass without learning.
     pub fn evaluate<M: Monitor>(
         &mut self,
         data: &Dataset,
         epoch: usize,
         mon: &mut M,
         ctl: &Control,
-    ) -> f32 {
-        let mut hits = 0;
+    ) -> Pass {
+        let mut pass = Pass::default();
         for i in 0..data.len() {
             if ctl.stopped() {
                 break;
@@ -195,9 +201,10 @@ impl Trainer {
                 label: data.label(i),
                 learn: false,
             };
-            hits += self.present(data, i, info, mon, ctl).correct as usize;
+            let r = self.present(data, i, info, mon, ctl);
+            pass.record(r.correct, r.activity);
         }
-        hits as f32 / data.len().max(1) as f32
+        pass
     }
 
     /// Trains for `epochs`, evaluating on `test` after each.
@@ -212,17 +219,18 @@ impl Trainer {
         let mut out = Vec::new();
         for epoch in 0..epochs {
             let t0 = Instant::now();
-            let train_accuracy = self.train_epoch(train, epoch, mon, ctl);
+            let trained = self.train_epoch(train, epoch, mon, ctl);
             let images_per_sec = train.len() as f32 / t0.elapsed().as_secs_f32().max(1e-9);
-            let test_accuracy = test.map(|t| self.evaluate(t, epoch, mon, ctl));
+            let test_accuracy = test.map(|t| self.evaluate(t, epoch, mon, ctl).accuracy());
             if ctl.stopped() {
                 break;
             }
             let e = EpochResult {
                 epoch,
-                train_accuracy,
+                train_accuracy: trained.accuracy(),
                 test_accuracy,
                 images_per_sec,
+                activity: trained.per_image(),
             };
             mon.epoch_end(&e);
             out.push(e);
@@ -262,5 +270,7 @@ mod tests {
         let r = t.fit(&train, Some(&test), 1, &mut (), &Control::new(0));
         let acc = r[0].test_accuracy.unwrap();
         assert!(acc > 0.3, "test accuracy {acc}");
+        let a = r[0].activity;
+        assert!(a.spikes > 0.0 && a.synops > a.spikes, "{a:?}");
     }
 }

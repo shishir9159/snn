@@ -110,7 +110,8 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
         let test_set = (!test.is_empty()).then_some(&test);
         if epochs == 0 {
             if let Some(t) = test_set {
-                println!("test {:.1}%", trainer.evaluate(t, 0, &mut (), &ctl) * 100.0);
+                let pass = trainer.evaluate(t, 0, &mut (), &ctl);
+                println!("test {:.1}%", pass.accuracy() * 100.0);
             }
         }
         trainer.fit(&train, test_set, epochs, &mut { printer }, &ctl);
