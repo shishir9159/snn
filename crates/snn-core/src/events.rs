@@ -143,6 +143,16 @@ impl Events {
         top * (1.0 - fy) + bottom * fy
     }
 
+    /// Takes a recording instead of generating events: `start` has one offset per
+    /// step plus two leading ones (see [`Events::at`]), `ids` follow in step order.
+    pub fn replace(&mut self, side: usize, start: &[u32], ids: &[u16]) {
+        self.side = side;
+        self.start.clear();
+        self.start.extend_from_slice(start);
+        self.ids.clear();
+        self.ids.extend_from_slice(ids);
+    }
+
     pub fn steps(&self) -> usize {
         self.start.len().saturating_sub(2)
     }

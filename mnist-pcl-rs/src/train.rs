@@ -1,10 +1,11 @@
 //! Training loop: turns each image into saccade events, runs the network on
 //! them, reads the class from its spike counts and tracks accuracy.
 
+use crate::input::Input;
 use crate::{Net, Params};
 use snn_core::events::{Events, Saccades};
 use snn_core::readout::{argmax, Readout};
-use snn_core::{Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Recent, Rng};
+use snn_core::{Activity, Control, EpochResult, ImageInfo, Pacer, Pass, Recent, Rng};
 use snn_live::app::Printer;
 use std::time::Instant;
 
@@ -69,6 +70,7 @@ pub struct Trainer {
     pub saccades: Saccades,
     rng: Rng,
     events: Events,
+    picture: Vec<u8>,
     code: Vec<f32>,
     probs: Vec<f32>,
     recent: Recent,
@@ -76,10 +78,17 @@ pub struct Trainer {
 }
 
 impl Trainer {
+    /// For images of `width` by `height`, which saccades turn into events.
     pub fn new(p: Params, width: usize, height: usize, classes: usize, seed: u64) -> Self {
+        let side = width.max(height) + 2 * Saccades::default().pad;
+        Self::with_retina(p, side, classes, seed)
+    }
+
+    /// For a retina of `side` by `side` pixels.
+    pub fn with_retina(p: Params, side: usize, classes: usize, seed: u64) -> Self {
         let mut rng = Rng::new(seed);
         let saccades = Saccades::default();
-        let net = Net::new(width.max(height) + 2 * saccades.pad, p.clone(), &mut rng);
+        let net = Net::new(side, p.clone(), &mut rng);
         let readout = Readout::new(
             net.simple.len() + net.complex.len(),
             classes,
@@ -91,6 +100,7 @@ impl Trainer {
             saccades,
             rng,
             events: Events::new(),
+            picture: Vec::new(),
             code: Vec::new(),
             probs: Vec::new(),
             recent: Recent::new(RECENT),
@@ -102,20 +112,18 @@ impl Trainer {
         self.recent.rate()
     }
 
-    /// Presents one image; learning images update the network and the readout.
-    pub fn present<M: Monitor>(
+    /// Presents one sample; learning ones update the network and the readout.
+    pub fn present<M: Monitor, D: Input + ?Sized>(
         &mut self,
-        data: &Dataset,
+        data: &D,
         i: usize,
         info: ImageInfo,
         mon: &mut M,
         ctl: &Control,
     ) -> ImageResult {
-        let img = data.image(i);
-        self.events
-            .generate(img, data.width, data.height, &self.saccades);
+        data.load(i, &self.saccades, &mut self.events, &mut self.picture);
         self.net.reset();
-        mon.image_start(&info, img, &self.net);
+        mon.image_start(&info, &self.picture, &self.net);
         let (mut exc, mut inh) = (0.0, 0.0);
         let mut events = 0u64;
         for t in 1..=self.events.steps() {
@@ -154,9 +162,9 @@ impl Trainer {
     }
 
     /// One shuffled pass with learning.
-    pub fn train_epoch<M: Monitor>(
+    pub fn train_epoch<M: Monitor, D: Input + ?Sized>(
         &mut self,
-        data: &Dataset,
+        data: &D,
         epoch: usize,
         mon: &mut M,
         ctl: &Control,
@@ -182,9 +190,9 @@ impl Trainer {
     }
 
     /// A pass without learning.
-    pub fn evaluate<M: Monitor>(
+    pub fn evaluate<M: Monitor, D: Input + ?Sized>(
         &mut self,
-        data: &Dataset,
+        data: &D,
         epoch: usize,
         mon: &mut M,
         ctl: &Control,
@@ -208,10 +216,10 @@ impl Trainer {
     }
 
     /// Trains for `epochs`, evaluating on `test` after each.
-    pub fn fit<M: Monitor>(
+    pub fn fit<M: Monitor, D: Input + ?Sized>(
         &mut self,
-        train: &Dataset,
-        test: Option<&Dataset>,
+        train: &D,
+        test: Option<&D>,
         epochs: usize,
         mon: &mut M,
         ctl: &Control,

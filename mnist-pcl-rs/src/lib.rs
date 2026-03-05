@@ -2,6 +2,7 @@
 //! hierarchy whose plastic lateral and top-down inhibition learns to suppress
 //! predictable spikes, on MNIST turned into saccade events.
 
+pub mod input;
 pub mod net;
 pub mod params;
 pub mod tap;

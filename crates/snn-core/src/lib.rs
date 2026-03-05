@@ -7,6 +7,7 @@ pub mod dataset;
 pub mod encode;
 pub mod energy;
 pub mod events;
+pub mod nmnist;
 pub mod quant;
 pub mod readout;
 pub mod rng;
