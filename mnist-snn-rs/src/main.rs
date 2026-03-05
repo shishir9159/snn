@@ -80,6 +80,14 @@ fn save_outputs(o: &Opts, t: &Trainer, side: usize) -> Result<(), String> {
     Ok(())
 }
 
+fn weight_range(p: &Params) -> String {
+    let range = format!("{}–{}", p.stdp.w_min, p.stdp.w_max);
+    match p.weight_bits {
+        0 => range,
+        bits => format!("{range} · {bits} bit"),
+    }
+}
+
 /// Rows of the dashboard's model panel.
 fn model_params(p: &Params) -> Vec<Param<'static>> {
     let div = if p.threshold_div == 1.0 {
@@ -92,7 +100,7 @@ fn model_params(p: &Params) -> Vec<Param<'static>> {
         Param::num("Leak", p.lif.leak, "/ms"),
         Param::num("Refractory", p.lif.t_ref as f32, "ms"),
         Param::num("Floor", p.lif.floor, ""),
-        Param::text("Weights", format!("{}–{}", p.stdp.w_min, p.stdp.w_max)),
+        Param::text("Weights", weight_range(p)),
         Param::num("Learning rate", p.stdp.sigma, ""),
     ]
 }
@@ -102,6 +110,15 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
     let params = o.params.clone();
     let classes = train.classes.max(test.classes);
     let mut trainer = build_trainer(&a, &o, &params, &train, classes)?;
+    if params.weight_bits > 0 {
+        let n = (trainer.layer.n_in * trainer.layer.n_out) as u64;
+        let bytes = n * params.weight_bits.min(16) as u64 / 8;
+        println!(
+            "weights: {} bits each, {bytes} bytes instead of {}",
+            params.weight_bits,
+            n * 4
+        );
+    }
     let epochs = a.epochs();
     let printer = Printer::new(train.len());
 
@@ -223,6 +240,24 @@ mod tests {
         assert!(parse(&["--set", "leak"])
             .unwrap_err()
             .contains("name=value"));
+    }
+
+    #[test]
+    fn weight_bits_can_be_set_and_are_shown() {
+        let (_, o) = parse(&[
+            "--set",
+            "weight_bits=4",
+            "--set",
+            "stochastic_rounding=false",
+        ])
+        .unwrap();
+        assert_eq!(
+            (o.params.weight_bits, o.params.stochastic_rounding),
+            (4, false)
+        );
+        assert_eq!(weight_range(&o.params), "0–2 · 4 bit");
+        assert_eq!(weight_range(&Params::default()), "0–2");
+        assert!(parse(&["--set", "weight_bits=-1"]).is_err());
     }
 
     #[test]

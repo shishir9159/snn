@@ -334,6 +334,22 @@ mod tests {
     }
 
     #[test]
+    fn learns_synthetic_digits_with_few_bits_per_weight() {
+        let train = synthetic(2000, 1);
+        let test = synthetic(300, 2);
+        for bits in [8, 6] {
+            let p = Params {
+                weight_bits: bits,
+                ..Params::default()
+            };
+            let mut t = Trainer::new(p, 784, 40, 10, 7);
+            let r = t.fit(&train, Some(&test), 1, &mut (), &Control::new(0));
+            let acc = r[0].test_accuracy.unwrap();
+            assert!(acc > 0.35, "{bits} bits: test accuracy {acc}");
+        }
+    }
+
+    #[test]
     fn stop_ends_training_early() {
         let train = synthetic(50, 1);
         let mut t = Trainer::new(Params::default(), 784, 4, 10, 7);

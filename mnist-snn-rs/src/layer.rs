@@ -6,7 +6,7 @@ use crate::stdp::Stdp;
 use snn_core::encode::SpikeTrain;
 use snn_core::rng::Rng;
 use snn_core::weights;
-use snn_core::Activity;
+use snn_core::{Activity, Quantizer};
 
 /// State after one simulated step, handed to an [`Observer`].
 pub struct Step<'a> {
@@ -68,6 +68,9 @@ pub struct Layer {
     stdp: Stdp,
     thresholds: Vec<f32>,
     fired: Vec<u16>,
+    /// the weight grid, when the weights are stored in fewer bits
+    quant: Option<Quantizer>,
+    qrng: Rng,
 }
 
 impl Layer {
@@ -80,8 +83,19 @@ impl Layer {
         Self::with_weights(n_in, n_out, w, p)
     }
 
-    pub fn with_weights(n_in: usize, n_out: usize, weights: Vec<f32>, p: &Params) -> Self {
+    /// Weights of `n_in` per output neuron; with `weight_bits` they are snapped
+    /// to the nearest level.
+    pub fn with_weights(n_in: usize, n_out: usize, mut weights: Vec<f32>, p: &Params) -> Self {
         assert_eq!(weights.len(), n_in * n_out);
+        let quant = Quantizer::new(
+            p.weight_bits,
+            p.stdp.w_min,
+            p.stdp.w_max,
+            p.stochastic_rounding,
+        );
+        if let Some(q) = &quant {
+            q.nearest(&mut weights);
+        }
         let mut by_input = vec![0.0; n_in * n_out];
         for (j, row) in weights.chunks_exact(n_in).enumerate() {
             for (i, &w) in row.iter().enumerate() {
@@ -99,6 +113,8 @@ impl Layer {
             stdp: Stdp::new(&p.stdp),
             thresholds: vec![0.0; n_out],
             fired: Vec::with_capacity(n_out),
+            quant,
+            qrng: Rng::new(0x51ab),
         }
     }
 
@@ -178,7 +194,14 @@ impl Layer {
                     fired.push(j as u16);
                     spikes[j] += 1;
                     if learn {
-                        self.stdp.post_spike(row, train, t);
+                        match &self.quant {
+                            Some(q) => {
+                                let rng = &mut self.qrng;
+                                self.stdp
+                                    .post_spike_rounded(row, train, t, |w| q.snap(w, rng));
+                            }
+                            None => self.stdp.post_spike(row, train, t),
+                        }
                     }
                 }
             }
@@ -204,6 +227,9 @@ impl Layer {
                 let row = &mut self.weights[w * self.n_in..(w + 1) * self.n_in];
                 self.stdp.depress_silent(row, train, p.silent_penalty);
                 normalize(row, p.w_norm, p.stdp.w_max);
+                if let Some(q) = &self.quant {
+                    q.apply(row, &mut self.qrng);
+                }
                 self.sync(w);
             }
             // drive every neuron toward an equal share of wins
@@ -345,6 +371,58 @@ mod tests {
                 assert_eq!(l.by_input[i * 5 + j], l.row(j)[i]);
             }
         }
+    }
+
+    fn on_grid(w: &[f32], bits: u32, p: &Params) -> bool {
+        let step = (p.stdp.w_max - p.stdp.w_min) / ((1u32 << bits) - 1) as f32;
+        w.iter().all(|&x| {
+            let t = (x - p.stdp.w_min) / step;
+            (t - t.round()).abs() < 1e-3
+        })
+    }
+
+    #[test]
+    fn quantised_weights_stay_on_the_grid_and_still_learn() {
+        for stochastic in [true, false] {
+            let p = Params {
+                weight_bits: 5,
+                stochastic_rounding: stochastic,
+                ..Params::default()
+            };
+            let mut l = Layer::new(784, 2, &p, &mut Rng::new(3));
+            assert!(on_grid(l.weights(), 5, &p), "initial weights");
+            let (v, h) = (encode(&bar(true), &p), encode(&bar(false), &p));
+            for _ in 0..30 {
+                l.present(&v, &p, true, &mut ());
+                l.present(&h, &p, true, &mut ());
+            }
+            assert!(on_grid(l.weights(), 5, &p), "learned weights");
+            let wv = l.present(&v, &p, false, &mut ()).winner;
+            let wh = l.present(&h, &p, false, &mut ()).winner;
+            assert!(
+                wv.is_some() && wh.is_some() && wv != wh,
+                "stochastic {stochastic}"
+            );
+            for j in 0..2 {
+                for i in 0..784 {
+                    assert_eq!(l.by_input[i * 2 + j], l.row(j)[i], "input-major copy");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn loaded_weights_snap_to_the_grid() {
+        let p = Params {
+            weight_bits: 3,
+            ..Params::default()
+        };
+        let w = snn_core::weights::random(784 * 2, 0.0, 2.0, &mut Rng::new(9));
+        let l = Layer::with_weights(784, 2, w.clone(), &p);
+        assert!(on_grid(l.weights(), 3, &p));
+        assert_ne!(l.weights(), w.as_slice());
+        let full = Layer::with_weights(784, 2, w.clone(), &Params::default());
+        assert_eq!(full.weights(), w.as_slice(), "no bits, no change");
     }
 
     #[test]

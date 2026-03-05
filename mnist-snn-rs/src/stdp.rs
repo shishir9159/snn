@@ -44,13 +44,25 @@ impl Stdp {
     /// Applies every pre spike within the window around a post spike at step `t`
     /// to one neuron's weight row.
     pub fn post_spike(&self, row: &mut [f32], train: &SpikeTrain, t: usize) {
+        self.post_spike_rounded(row, train, t, |w| w);
+    }
+
+    /// As [`Stdp::post_spike`], with each updated weight passed through `round`
+    /// as it is written, the way a low-precision synapse memory stores it.
+    pub fn post_spike_rounded<R: FnMut(f32) -> f32>(
+        &self,
+        row: &mut [f32],
+        train: &SpikeTrain,
+        t: usize,
+        mut round: R,
+    ) {
         let lo = t.saturating_sub(self.p.t_back as usize).max(1);
         let hi = (t + self.p.t_fore as usize).min(train.steps());
         for s in lo..=hi {
             let dw = self.table[s + self.p.t_back as usize - t];
             for &i in train.active(s) {
                 let w = &mut row[i as usize];
-                *w = bounded(*w, dw, &self.p);
+                *w = round(bounded(*w, dw, &self.p));
             }
         }
     }
@@ -138,6 +150,28 @@ mod tests {
         let mut row = [0.5, 0.5];
         stdp.post_spike(&mut row, &tr, 140);
         assert_eq!(row[0], 0.5, "no pre spike within the window");
+    }
+
+    #[test]
+    fn rounded_updates_land_on_the_grid_and_leave_the_rest() {
+        let tr = train(&[0.01, 0.0, 0.01]);
+        let stdp = Stdp::new(&p());
+        let q = snn_core::Quantizer::new(3, p().w_min, p().w_max, true).unwrap();
+        let mut rng = Rng::new(5);
+        let mut row = [0.5, 0.3, 0.7];
+        stdp.post_spike_rounded(&mut row, &tr, 100, |w| q.snap(w, &mut rng));
+        let on_grid = |w: f32| {
+            let t = (w - p().w_min) / q.step();
+            (t - t.round()).abs() < 1e-3
+        };
+        assert!(on_grid(row[0]) && on_grid(row[2]));
+        assert_eq!(row[1], 0.3, "the silent input was not written");
+        let mut plain = [0.5, 0.3, 0.7];
+        stdp.post_spike(&mut plain, &tr, 100);
+        assert!(
+            (row[0] - plain[0]).abs() <= q.step(),
+            "within a step of the exact update"
+        );
     }
 
     #[test]

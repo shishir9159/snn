@@ -50,6 +50,11 @@ pub struct Params {
     pub theta_rate: f32,
     /// initial weights are uniform in this range
     pub w_init: (f32, f32),
+    /// bits per stored weight, on a grid over [w_min, w_max]; 0 keeps full precision
+    pub weight_bits: u32,
+    /// round learned weights up with the probability of the step they gained,
+    /// instead of to the nearest level, so updates below a step still add up
+    pub stochastic_rounding: bool,
 }
 
 impl Default for LifParams {
@@ -93,6 +98,8 @@ impl Default for Params {
             w_norm: 8.0,
             theta_rate: 0.05,
             w_init: (0.0, 0.4),
+            weight_bits: 0,
+            stochastic_rounding: true,
         }
     }
 }
@@ -103,6 +110,8 @@ snn_core::tunable!(Params {
     "silent_penalty" => silent_penalty,
     "w_norm" => w_norm,
     "theta_rate" => theta_rate,
+    "weight_bits" => weight_bits,
+    "stochastic_rounding" => stochastic_rounding,
     "rest" => lif.rest,
     "floor" => lif.floor,
     "leak" => lif.leak,
@@ -134,7 +143,12 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), Params::KEYS.len(), "a name appears twice");
         for key in Params::KEYS {
-            Params::default().set(key, "1").unwrap();
+            let value = if *key == "stochastic_rounding" {
+                "false"
+            } else {
+                "1"
+            };
+            Params::default().set(key, value).unwrap();
         }
         let mut p = Params::default();
         p.set("leak", "0.4").unwrap();
@@ -144,6 +158,8 @@ mod tests {
             (p.lif.leak, p.stdp.a_plus, p.encode.freq_max),
             (0.4, 0.9, 30.0)
         );
+        p.set("weight_bits", "4").unwrap();
+        assert_eq!(p.weight_bits, 4);
         assert!(p.set("leek", "1").is_err());
         assert!(p.set("t_ref", "1.5").is_err());
     }
