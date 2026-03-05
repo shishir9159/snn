@@ -29,7 +29,7 @@ check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace --exclude snn-live-py
-    uv run --package snn-cuda pytest mnist-snn-cuda/tests
+    uv run --package snn-cuda pytest mnist-snn-cuda/tests scripts
 
 # rewrite the Rust sources in the standard format
 fmt:
@@ -42,6 +42,10 @@ snn-live-py:
 # WTA STDP on CUDA (Python + CuPy), live view at http://127.0.0.1:7878
 mnist-snn-cuda *args: mnist
     uv run --package snn-cuda --extra live python -m snn_cuda --mnist {{data}} {{args}}
+
+# time every Rust model and train each briefly (accuracy, spikes, synops); --save DIR keeps the build, --against DIR compares to one
+bench-all *args: mnist
+    uv run --no-project python scripts/bench_all.py --mnist {{data}} {{args}}
 
 # Rust CPU vs CUDA, interleaved best-of-5
 snn-cuda-bench *args:

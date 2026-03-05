@@ -11,6 +11,7 @@
 !/README.md
 !/crates/
 !/.github/
+!/scripts/
 !/web/
 !/mnist-*/
 
