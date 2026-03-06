@@ -148,7 +148,7 @@ impl Printer {
     }
 
     pub fn image(&mut self, i: &ImageInfo, running_accuracy: f32) {
-        if i.learn && (i.index + 1) % self.every == 0 {
+        if i.learn && (i.index + 1).is_multiple_of(self.every) {
             let rate = self.every as f32 / self.t0.elapsed().as_secs_f32();
             println!(
                 "epoch {}  {:>6}/{}  running acc {:5.1}%  {:6.0} img/s",

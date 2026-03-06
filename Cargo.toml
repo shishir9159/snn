@@ -5,14 +5,14 @@ members = ["crates/snn-core", "crates/snn-live", "crates/snn-live-py", "mnist-sn
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.94"
 
 [workspace.dependencies]
 snn-core = { path = "crates/snn-core" }
 snn-live = { path = "crates/snn-live" }
-flate2 = "=1.1.1"
-image = { version = "=0.25.6", default-features = false, features = ["png"] }
-tungstenite = "=0.26.2"
+flate2 = "=1.1.9"
+image = { version = "=0.25.9", default-features = false, features = ["png"] }
+tungstenite = "=0.28.0"
 
 # tests train networks; unoptimised they take minutes
 [profile.test]

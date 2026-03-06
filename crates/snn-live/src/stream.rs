@@ -29,7 +29,7 @@ pub struct Series {
 impl Series {
     pub fn record(&mut self, images: u64, v: f32) {
         let every = self.every.max(1);
-        if images % every == 0 {
+        if images.is_multiple_of(every) {
             self.points.push((images as u32, v));
             if self.points.len() >= HISTORY {
                 self.points = self.points.iter().copied().step_by(2).collect();

@@ -11,4 +11,4 @@ crate-type = ["cdylib"]
 [dependencies]
 snn-core.workspace = true
 snn-live.workspace = true
-pyo3 = { version = "=0.25.0", features = ["extension-module"] }
+pyo3 = "=0.28.2"

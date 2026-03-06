@@ -27,7 +27,7 @@ struct Sample {
 /// polarity 0 for ON as in [`Events`]) bucketed by step: step `t` holds the
 /// events from millisecond `t - 1` up to `t`.
 fn bucket(bytes: &[u8]) -> io::Result<Sample> {
-    if bytes.len() % 5 != 0 {
+    if !bytes.len().is_multiple_of(5) {
         return Err(invalid(format!(
             "{} bytes is not whole 5-byte events",
             bytes.len()

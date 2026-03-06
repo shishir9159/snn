@@ -6,6 +6,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use pyo3::buffer::PyBuffer;
+use pyo3::conversion::FromPyObjectOwned;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
@@ -44,10 +45,11 @@ fn role(name: &str) -> PyResult<Role> {
     })
 }
 
-fn item<'py, T: FromPyObject<'py>>(d: &Bound<'py, PyDict>, key: &str) -> PyResult<T> {
+fn item<'py, T: FromPyObjectOwned<'py>>(d: &Bound<'py, PyDict>, key: &str) -> PyResult<T> {
     d.get_item(key)?
         .ok_or_else(|| PyValueError::new_err(format!("meta needs {key}")))?
         .extract()
+        .map_err(Into::into)
 }
 
 /// META, PARAMS, POPS and SERIES: what every viewer starts with.
@@ -225,7 +227,7 @@ impl Live {
     ) -> PyResult<()> {
         if self.ctl.speed() != 0 || self.ctl.is_paused() {
             let (pacer, ctl) = (&mut self.pacer, &self.ctl);
-            py.allow_threads(|| pacer.tick(ctl));
+            py.detach(|| pacer.tick(ctl));
         }
         if !self.tap.streaming() {
             self.tap.step(t, &[], &[], &[]);
@@ -377,7 +379,7 @@ impl Live {
     fn hold(&self, py: Python<'_>) -> PyResult<()> {
         app::finish_live(&self.hub, &self.ctl);
         loop {
-            py.allow_threads(|| std::thread::sleep(Duration::from_millis(100)));
+            py.detach(|| std::thread::sleep(Duration::from_millis(100)));
             py.check_signals()?;
         }
     }

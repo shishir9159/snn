@@ -4,4 +4,4 @@ members = ["mnist-snn-cuda", "crates/snn-live-py"]
 
 [tool.uv]
 # packages as they were when this code was written, like the pinned Rust crates
-exclude-newer = "2025-06-15T00:00:00Z"
+exclude-newer = "2026-03-06T00:00:00Z"

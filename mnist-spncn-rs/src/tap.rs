@@ -134,7 +134,7 @@ impl Monitor for Tap {
         let l = &net.lat[pop - 1];
         self.t
             .step(t, &lists, &net.energy, &[l.v[unit], l.j[unit], l.z[unit]]);
-        if t % MAP_EVERY == 0 {
+        if t.is_multiple_of(MAP_EVERY) {
             let (w, h) = self.side;
             let pred = &net.pred[0];
             let scale = pred.iter().fold(0.0f32, |m, v| m.max(v.abs()));

@@ -8,7 +8,7 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # the pinned toolchain and its components come from rust-toolchain.toml
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -20,8 +20,8 @@ jobs:
   python:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
       # no GPU here: the CUDA tests skip themselves, the rest runs on numpy
       - run: uv run --no-project --with numpy --with pytest python -m pytest mnist-snn-cuda/tests scripts
         env:
