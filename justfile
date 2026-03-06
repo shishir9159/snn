@@ -17,12 +17,13 @@ mnist-pcsnn-rs *args: mnist
 mnist-pcl-rs *args: mnist
     cargo run --release -p mnist-pcl-rs -- --mnist {{data}} {{args}}
 
-# fetch the MNIST idx files, skipping ones already present
+# fetch the MNIST idx files, skipping ones already present, and check their sums
 mnist:
     mkdir -p {{data}}
     for f in train-images-idx3-ubyte train-labels-idx1-ubyte t10k-images-idx3-ubyte t10k-labels-idx1-ubyte; do \
         [ -f {{data}}/$f.gz ] || { curl -#fL --retry 3 -o {{data}}/$f.gz.part {{mirror}}/$f.gz && mv {{data}}/$f.gz.part {{data}}/$f.gz; } || exit 1; \
     done
+    cd {{data}} && sha256sum --check --quiet "$OLDPWD/mnist.sha256"
 
 # format, lint and test the way CI does
 check:

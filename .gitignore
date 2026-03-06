@@ -4,6 +4,7 @@
 !/Cargo.lock
 !/rust-toolchain.toml
 !/justfile
+!/mnist.sha256
 !/pyproject.toml
 !/uv.lock
 !/.python-version
