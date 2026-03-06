@@ -1,5 +1,5 @@
 //! Per-phase timing of the training pipeline on MNIST.
-//! usage: cargo run --release -p mnist-snn-rs --example profile -- <mnist dir> [images]
+//! usage: cargo run --release -p mnist-snn-rs --example profile -- <mnist dir> [images] [outputs]
 
 use mnist_snn::{Layer, Params};
 use snn_core::{dataset, encode, Rng, SpikeTrain};
@@ -12,12 +12,13 @@ fn main() {
     let n: usize = args
         .next()
         .map_or(20_000, |s| s.parse().expect("image count"));
+    let outputs: usize = args.next().map_or(40, |s| s.parse().expect("output count"));
     let mut data = dataset::mnist(Path::new(&dir), true).expect("mnist");
     data.truncate(n);
 
     let p = Params::default();
     let mut rng = Rng::new(1);
-    let mut layer = Layer::new(784, 40, &p, &mut rng);
+    let mut layer = Layer::new(784, outputs, &p, &mut rng);
     let (mut pot, mut train) = (Vec::new(), SpikeTrain::new());
     let mut t = [Duration::ZERO; 4];
     for i in 0..data.len() {

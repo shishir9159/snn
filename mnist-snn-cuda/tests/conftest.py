@@ -2,7 +2,7 @@
 
 import importlib.util
 
-GPU_TESTS = ["test_layer.py", "test_train.py", "test_live.py"]
+GPU_TESTS = ["test_layer.py", "test_train.py", "test_live.py", "test_parity.py"]
 
 
 def _has_gpu():

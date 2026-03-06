@@ -8,6 +8,7 @@ Rust numbers add receptive field and encode to `present`, as CUDA does them on d
 import argparse
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -18,8 +19,13 @@ from . import dataset
 from .train import Trainer
 
 
-def rust(exe, mnist, n):
-    out = subprocess.run([str(Path(exe).resolve()), mnist, str(n)], check=True, capture_output=True, text=True).stdout
+def default_exe():
+    return "target/release/examples/profile" + (".exe" if sys.platform == "win32" else "")
+
+
+def rust(exe, mnist, n, outputs):
+    cmd = [str(Path(exe).resolve()), mnist, str(n), str(outputs)]
+    out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
     us = {m[1].strip(): float(m[2]) for m in re.finditer(r"^(.+?)\s+([\d.]+) us/img", out, re.M)}
     enc = us["receptive field"] + us["encode"]
     return 1e6 / (enc + us["present"]), 1e6 / (enc + us["present + learning"])
@@ -40,7 +46,7 @@ def cuda(data, n_out):
 def main(argv=None):
     a = argparse.ArgumentParser(prog="snn-cuda-bench")
     a.add_argument("--mnist", required=True)
-    a.add_argument("--exe", default="target/release/examples/profile.exe")
+    a.add_argument("--exe", default=default_exe())
     a.add_argument("--images", type=int, default=6000)
     a.add_argument("--outputs", type=int, default=40)
     a.add_argument("--rounds", type=int, default=5)
@@ -52,7 +58,7 @@ def main(argv=None):
     cuda(data, a.outputs)  # warm-up: compile, upload
     best = np.zeros((2, 2))  # (rust, cuda) x (eval, train)
     for r in range(a.rounds):
-        rs, cs = rust(a.exe, a.mnist, a.images), cuda(data, a.outputs)
+        rs, cs = rust(a.exe, a.mnist, a.images, a.outputs), cuda(data, a.outputs)
         best[0] = np.maximum(best[0], rs)
         best[1] = np.maximum(best[1], cs)
         print(f"round {r + 1}: rust {rs[0]:.0f}/{rs[1]:.0f}  cuda {cs[0]:.0f}/{cs[1]:.0f} img/s", flush=True)
