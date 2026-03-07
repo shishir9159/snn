@@ -110,6 +110,17 @@ impl Trainer {
         self.recent.rate()
     }
 
+    // the softmax readout weighs every unit's count once per image
+    fn readout_macs(&self) -> u64 {
+        let units: usize = self.net.p.layers.iter().sum();
+        (units * self.readout.classes()) as u64
+    }
+
+    /// MACs per image of a dense ANN with the same layers and readout.
+    pub fn dense_macs(&self) -> u64 {
+        self.net.dense_macs() + self.readout_macs()
+    }
+
     /// Presents one image; learning images update the network and the readout.
     pub fn present<M: Monitor>(
         &mut self,
@@ -143,7 +154,8 @@ impl Trainer {
             }
         }
         self.net.end(info.learn);
-        let activity = self.net.activity(inputs);
+        let mut activity = self.net.activity(inputs);
+        activity.macs += self.readout_macs();
 
         self.net.code(&mut self.code);
         self.readout.probs(&self.code, &mut self.probs);
@@ -295,7 +307,9 @@ mod tests {
         let acc = r[0].test_accuracy.unwrap();
         assert!(acc > 0.4, "test accuracy {acc}");
         let a = r[0].activity;
-        assert!(a.spikes > 0.0 && a.synops > a.spikes, "{a:?}");
+        // input spikes are the only spike deliveries, graded errors the bulk
+        assert!(a.spikes > a.synops && a.macs > 100.0 * a.synops, "{a:?}");
+        assert!(a.macs as u64 > t.dense_macs(), "{a:?}");
         let c = r[0].confusion.as_ref().unwrap();
         assert_eq!((c.total(), c.classes()), (300, 10));
         assert_eq!(Some(c.accuracy()), r[0].test_accuracy);

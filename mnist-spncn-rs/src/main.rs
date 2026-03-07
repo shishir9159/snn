@@ -74,7 +74,7 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
     let p = o.params.clone();
     let mut trainer = Trainer::new(p.clone(), train.width * train.height, classes, a.seed);
     let epochs = a.epochs();
-    let printer = Printer::new(train.len());
+    let printer = Printer::new(train.len()).dense(trainer.dense_macs());
     let side = train.width;
 
     if a.headless {
@@ -95,6 +95,7 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
         epochs,
         steps: p.steps(),
         dt_ms: p.dt,
+        dense_macs: trainer.dense_macs(),
     };
     let names: Vec<String> = (1..=p.layers.len()).map(|l| format!("L{l}")).collect();
     let mut pops = vec![Pop::grid("input", train.width, train.height, Role::Input)];

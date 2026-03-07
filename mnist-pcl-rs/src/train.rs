@@ -112,6 +112,16 @@ impl Trainer {
         self.recent.rate()
     }
 
+    // the softmax readout weighs every cell's count once per sample
+    fn readout_macs(&self) -> u64 {
+        ((self.net.simple.len() + self.net.complex.len()) * self.readout.classes()) as u64
+    }
+
+    /// MACs per sample of a dense ANN with the same weights and readout.
+    pub fn dense_macs(&self) -> u64 {
+        self.net.dense_macs() + self.readout_macs()
+    }
+
     /// Presents one sample; learning ones update the network and the readout.
     pub fn present<M: Monitor, D: Input + ?Sized>(
         &mut self,
@@ -139,7 +149,8 @@ impl Trainer {
                 ctl.wait_while_paused();
             }
         }
-        let activity = self.net.activity(events);
+        let mut activity = self.net.activity(events);
+        activity.macs += self.readout_macs();
         self.net.code(&mut self.code);
         self.readout.probs(&self.code, &mut self.probs);
         let predicted = argmax(&self.probs);

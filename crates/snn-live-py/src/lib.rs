@@ -72,6 +72,9 @@ fn intro(
         epochs: item(meta, "epochs")?,
         steps: item(meta, "steps")?,
         dt_ms: meta.get_item("dt_ms")?.map_or(Ok(1.0), |v| v.extract())?,
+        dense_macs: meta
+            .get_item("dense_macs")?
+            .map_or(Ok(0), |v| v.extract())?,
     };
 
     // (name, number or text, unit)
@@ -147,8 +150,9 @@ struct Live {
 #[pymethods]
 impl Live {
     /// `meta`: model, dataset, width, height, classes, n_train, n_test, epochs,
-    /// steps, dt_ms. `speed` is a multiple of real time (1 ms per step), None
-    /// for unthrottled.
+    /// steps, dt_ms, dense_macs (MACs per image of a dense ANN with the same
+    /// layers). `speed` is a multiple of real time (1 ms per step), None for
+    /// unthrottled.
     #[new]
     #[pyo3(signature = (meta, pops, *, title = "Model", params = vec![], series = None, port = 7878, speed = Some(1.0)))]
     fn new(
@@ -323,8 +327,9 @@ impl Live {
 
     /// Ends a presentation. `predicted` is None for no decision; `spikes` counts
     /// spikes per population; `scalars` are per-image metrics, smoothed into
-    /// history; `synops` counts the synaptic operations the spikes caused.
-    #[pyo3(signature = (info, predicted, correct, running_accuracy, scores, spikes, scalars = None, synops = 0))]
+    /// history; `synops` counts the synaptic operations the spikes caused and
+    /// `macs` the multiply-accumulates on graded values.
+    #[pyo3(signature = (info, predicted, correct, running_accuracy, scores, spikes, scalars = None, synops = 0, macs = 0))]
     fn end_image(
         &mut self,
         py: Python<'_>,
@@ -336,8 +341,10 @@ impl Live {
         spikes: Vec<u32>,
         scalars: Option<PyBuffer<f32>>,
         synops: u64,
+        macs: u64,
     ) -> PyResult<()> {
         let scalars = scalars.as_ref().map_or(Ok(Vec::new()), |b| b.to_vec(py))?;
+        let fired = spikes.iter().map(|&s| s as u64).sum();
         let e = End {
             predicted,
             correct,
@@ -345,7 +352,7 @@ impl Live {
             scores: &scores.to_vec(py)?,
             spikes: &spikes,
             scalars: &scalars,
-            activity: Activity::new(spikes.iter().map(|&s| s as u64).sum(), synops),
+            activity: Activity::new(fired, synops).with_macs(macs),
         };
         let fields = &self.fields;
         self.tap
@@ -354,8 +361,8 @@ impl Live {
         Ok(())
     }
 
-    /// `spikes` and `synops` are per training image of the epoch.
-    #[pyo3(signature = (epoch, train_accuracy, test_accuracy = None, images_per_sec = 0.0, spikes = 0.0, synops = 0.0))]
+    /// `spikes`, `synops` and `macs` are per training image of the epoch.
+    #[pyo3(signature = (epoch, train_accuracy, test_accuracy = None, images_per_sec = 0.0, spikes = 0.0, synops = 0.0, macs = 0.0))]
     fn epoch_end(
         &mut self,
         epoch: usize,
@@ -364,13 +371,18 @@ impl Live {
         images_per_sec: f32,
         spikes: f32,
         synops: f32,
+        macs: f32,
     ) {
         self.tap.epoch_end(&EpochResult {
             epoch,
             train_accuracy,
             test_accuracy,
             images_per_sec,
-            activity: PerImage { spikes, synops },
+            activity: PerImage {
+                spikes,
+                synops,
+                macs,
+            },
             confusion: None,
         });
     }

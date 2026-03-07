@@ -120,7 +120,7 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
         );
     }
     let epochs = a.epochs();
-    let printer = Printer::new(train.len());
+    let printer = Printer::new(train.len()).dense(trainer.layer.dense_macs());
 
     if a.headless {
         let ctl = Control::new(0);
@@ -146,6 +146,7 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
         epochs,
         steps: params.time_steps,
         dt_ms: 1.0,
+        dense_macs: trainer.layer.dense_macs(),
     };
     let pops = [
         Pop::grid("input", train.width, train.height, Role::Input),

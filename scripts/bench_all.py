@@ -32,7 +32,8 @@ MODELS = [
 PHASE = re.compile(r"^(.+?)\s+([\d.]+) us/img", re.M)
 EPOCH = re.compile(
     r"train ([\d.]+)%\s+test ([\d.]+)%\s+\(([\d.]+) img/s\)"
-    r"(?:\s+([\d.]+[KMG]?) spikes ([\d.]+[KMG]?) synops)?"
+    r"(?:\s+([\d.]+[KMG]?) spikes ([\d.]+[KMG]?) synops(?: ([\d.]+[KMG]?) MACs)? / img"
+    r"\s+([\d.]+ [nµm]J)(?: vs ([\d.]+ [nµm]J) dense)?)?"
 )
 
 
@@ -40,6 +41,12 @@ def expand(count):
     """'7.7K' -> 7700.0"""
     scale = {"K": 1e3, "M": 1e6, "G": 1e9}.get(count[-1:], 1)
     return float(count.rstrip("KMG")) * scale
+
+
+def nanojoules(text):
+    """'1.50 µJ' -> 1500.0"""
+    value, unit = text.split()
+    return float(value) * {"nJ": 1.0, "µJ": 1e3, "mJ": 1e6}[unit]
 
 
 def parse_phases(text):
@@ -52,18 +59,22 @@ def parse_epoch(text):
     found = EPOCH.findall(text)
     if not found:
         return None
-    train, test, rate, spikes, synops = found[-1]
+    train, test, rate, spikes, synops, macs, energy, dense = found[-1]
+    count = lambda c: expand(c) if c else 0.0  # noqa: E731
     return {
         "train %": float(train),
         "test %": float(test),
         "img/s": float(rate),
-        "spikes/img": expand(spikes) if spikes else 0.0,
-        "synops/img": expand(synops) if synops else 0.0,
+        "spikes/img": count(spikes),
+        "synops/img": count(synops),
+        "MACs/img": count(macs),
+        "nJ/img": nanojoules(energy) if energy else 0.0,
+        "dense nJ": nanojoules(dense) if dense else 0.0,
     }
 
 
 def run(cmd):
-    done = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    done = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
     if done.returncode:
         sys.exit(f"{' '.join(map(str, cmd))} failed:\n{done.stderr[-2000:]}")
     return done.stdout
@@ -126,11 +137,22 @@ def report(time_rows, quality_rows, rounds, train, test):
         change = f"  {100 * (us - base) / base:+6.1f}% vs {base:.1f}" if base else ""
         print(f"  {name:<6}{phase:<22}{us:>11.1f}{change}")
     print(f"\n{train} training and {test} test images, figures of the last epoch")
-    head = ("model", "epochs", "train %", "test %", "img/s", "spikes/img", "synops/img")
+    print("energy: 0.9 pJ per synop, 4.6 pJ per MAC; x dense is against an ANN with the same layers")
+    head = ("model", "epochs", "train %", "test %", "img/s", "spikes/img", "synops/img",
+            "MACs/img", "nJ/img", "x dense")
     print("  " + "".join(f"{h:<12}" for h in head))
     for name, epochs, q in quality_rows:
-        cells = [f"{q[k]:.1f}" if "%" in k else f"{q[k]:,.0f}" for k in head[2:]]
+        q = {**q, "x dense": q["nJ/img"] / q["dense nJ"] if q.get("dense nJ") else None}
+        cells = [cell(k, q[k]) for k in head[2:]]
         print("  " + f"{name:<12}{epochs:<12}" + "".join(f"{c:<12}" for c in cells))
+
+
+def cell(key, v):
+    if v is None:
+        return "-"
+    if "%" in key:
+        return f"{v:.1f}"
+    return f"{v:.2f}" if key == "x dense" else f"{v:,.0f}"
 
 
 def save_csv(time_rows, quality_rows):

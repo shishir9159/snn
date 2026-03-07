@@ -203,6 +203,15 @@ impl Net {
         Activity::new(events + spikes, self.synops)
     }
 
+    /// MACs per image of a dense ANN with the same feed-forward weights: each
+    /// simple cell over its ON/OFF field, each complex cell over its patch.
+    pub fn dense_macs(&self) -> u64 {
+        let p = &self.p;
+        let simple = self.simple.len() * 2 * p.rf * p.rf;
+        let complex = self.complex.len() * p.complex_rf.pow(2) * p.features;
+        (simple + complex) as u64
+    }
+
     /// Delivers the events of step `t` and everything they set off.
     pub fn step(&mut self, t: u32, events: &[u16], learn: bool) {
         self.fired_s.clear();
@@ -499,6 +508,7 @@ mod tests {
         assert_eq!((net.n, net.m), (5, 4));
         assert_eq!(net.simple.len(), 5 * 5 * 32);
         assert_eq!(net.complex.len(), 4 * 4 * 16);
+        assert_eq!(net.dense_macs(), 800 * 2 * 100 + 256 * 4 * 32);
         assert_eq!(covering(13, 10, 6, 5).collect::<Vec<_>>(), [1, 2]);
         assert_eq!(covering(33, 10, 6, 5).collect::<Vec<_>>(), [4]);
     }

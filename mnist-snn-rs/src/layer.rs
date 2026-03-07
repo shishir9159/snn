@@ -127,6 +127,11 @@ impl Layer {
         &self.weights[j * self.n_in..(j + 1) * self.n_in]
     }
 
+    /// MACs per image of a dense ANN layer of the same shape.
+    pub fn dense_macs(&self) -> u64 {
+        (self.n_in * self.n_out) as u64
+    }
+
     // copies neuron j's row into the input-major view
     fn sync(&mut self, j: usize) {
         let row = &self.weights[j * self.n_in..(j + 1) * self.n_in];

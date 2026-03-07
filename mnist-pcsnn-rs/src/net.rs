@@ -154,6 +154,11 @@ impl Net {
         Activity::new(inputs + hidden + outputs, synops)
     }
 
+    /// MACs per image of a dense ANN with the same layers.
+    pub fn dense_macs(&self) -> u64 {
+        ((self.n_in + self.classes) * self.p.hidden) as u64
+    }
+
     /// Output that fired first in the forward pass, if any fired; on a shared
     /// step, the one that overshot its threshold most.
     pub fn decision(&self) -> Option<u8> {
@@ -393,6 +398,7 @@ mod tests {
         assert!(lit > 0 && hidden > 0);
         assert_eq!(a.spikes, lit + hidden + outputs);
         assert_eq!(a.synops, lit * 20 + hidden * 10);
+        assert_eq!(net.dense_macs(), 784 * 20 + 20 * 10);
     }
 
     #[test]

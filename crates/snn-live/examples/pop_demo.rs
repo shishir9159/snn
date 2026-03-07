@@ -26,6 +26,7 @@ fn main() {
         epochs: 1,
         steps: T,
         dt_ms: 1.0,
+        dense_macs: 0,
     };
     let pops = [
         Pop::grid("input", 28, 28, Role::Input),

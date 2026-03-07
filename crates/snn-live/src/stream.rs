@@ -182,6 +182,7 @@ impl Stream {
             let mean = &mut self.activity;
             mean.spikes += k * (now.spikes - mean.spikes);
             mean.synops += k * (now.synops - mean.synops);
+            mean.macs += k * (now.macs - mean.macs);
         }
         self.progress = Some((*info, running_accuracy));
     }
@@ -276,15 +277,17 @@ mod tests {
             s.activity,
             PerImage {
                 spikes: 10.0,
-                synops: 100.0
+                synops: 100.0,
+                macs: 0.0
             }
         );
-        s.end_image(&info(true), 0.0, Activity::new(20, 300));
+        s.end_image(&info(true), 0.0, Activity::new(20, 300).with_macs(50));
         assert_eq!(
             s.activity,
             PerImage {
                 spikes: 15.0,
-                synops: 200.0
+                synops: 200.0,
+                macs: 25.0
             }
         );
         s.end_image(&info(false), 0.0, Activity::new(1000, 9000));

@@ -19,7 +19,7 @@ pub use confusion::Confusion;
 pub use control::{Control, Pacer};
 pub use dataset::Dataset;
 pub use encode::SpikeTrain;
-pub use energy::{Activity, PerImage};
+pub use energy::{Activity, Costs, PerImage};
 pub use quant::Quantizer;
 pub use readout::Readout;
 pub use rng::Rng;

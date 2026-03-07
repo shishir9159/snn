@@ -75,7 +75,7 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
     let p = o.params.clone();
     let mut trainer = Trainer::new(p.clone(), train.width * train.height, classes, a.seed);
     let epochs = a.epochs();
-    let printer = Printer::new(train.len());
+    let printer = Printer::new(train.len()).dense(trainer.net.dense_macs());
     let side = train.width;
 
     if a.headless {
@@ -96,6 +96,7 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
         epochs,
         steps: p.steps(),
         dt_ms: 1.0,
+        dense_macs: trainer.net.dense_macs(),
     };
     let pops = [
         Pop::grid("input", train.width, train.height, Role::Input),

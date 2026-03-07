@@ -41,8 +41,8 @@ canvas { display: block; width: 100%; height: 100%; }
 .bp > i:nth-of-type(3) { bottom: -6px; left: -6px; } .bp > i:nth-of-type(4) { bottom: -6px; right: -6px; }
 .bp > .k { position: absolute; left: 12px; top: 8px; pointer-events: none; }
 
-header { display: flex; align-items: flex-end; gap: 28px; flex-wrap: wrap; }
-.stat { display: flex; flex-direction: column; gap: 4px; padding-left: 16px; border-left: 1px solid var(--divider); }
+header { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+.stat { display: flex; flex-direction: column; gap: 4px; padding-left: 14px; border-left: 1px solid var(--divider); }
 .stat .num { font-size: 30px; font-variant-numeric: tabular-nums; }
 .hero { padding-left: 0; border: 0; }
 .hero .num { font-size: 56px; font-variant-numeric: normal; }
@@ -116,6 +116,7 @@ th:first-child, td:first-child { text-align: left; }
     <div class="stat"><span class="k">Images / s</span><span class="num" id="ips-v">–</span></div>
     <div class="stat"><span class="k">Spikes / img</span><span class="num" id="spk-v">–</span></div>
     <div class="stat" title="synaptic operations: each spike counted once per synapse it reaches"><span class="k">SynOps / img</span><span class="num" id="syn-v">–</span></div>
+    <div class="stat" id="nj-tile" title="spike deliveries at 0.9 pJ, multiply-accumulates on graded values at 4.6 pJ (32-bit float, 45 nm); the ratio is against a dense ANN with the same layers"><span class="k">Energy / img</span><span class="num" id="nj-v">–</span></div>
     <div id="xstats" style="display:contents"></div>
     <div class="spacer"></div>
     <div class="seg" id="speed" role="radiogroup" aria-label="Simulation speed"></div>
@@ -186,7 +187,8 @@ const H = {
       nTest: v.getUint32(p + 9, true), epochs: v.getUint16(p + 13, true), T: v.getUint16(p + 15, true), dt: v.getFloat32(p + 17, true) };
     let o;
     [m.model, o] = str(v, p + 21);
-    [m.name] = str(v, o);
+    [m.name, o] = str(v, o);
+    m.denseNj = v.getFloat32(o, true);
     S.meta = m; S.nIn = m.w * m.h; S.T = m.T; S.side = m.w; S.img = new Uint8Array(S.nIn);
     if (VIEWS[m.model] !== view) {
       view = VIEWS[m.model];
@@ -247,7 +249,7 @@ const H = {
   8(v, p) { // PROGRESS
     const g = { epoch: v.getUint16(p, true), index: v.getUint32(p + 2, true), total: v.getUint32(p + 6, true), learn: v.getUint8(p + 10) === 1,
       acc: v.getFloat32(p + 11, true), steps: v.getFloat64(p + 15, true), images: v.getFloat64(p + 23, true), ips: v.getFloat32(p + 31, true),
-      spikes: v.getFloat32(p + 35, true), synops: v.getFloat32(p + 39, true) };
+      spikes: v.getFloat32(p + 35, true), synops: v.getFloat32(p + 39, true), macs: v.getFloat32(p + 43, true), nj: v.getFloat32(p + 47, true) };
     S.progress = g;
     const last = S.acc[S.acc.length - 1];
     if (g.learn && g.images > 0 && (!last || last[0] < g.images)) {
@@ -331,6 +333,8 @@ function fmtTime(ms) {
 }
 const pctText = (x) => (x * 100).toFixed(1) + "%";
 const compact = (n) => (n >= 1e9 ? (n / 1e9).toFixed(1) + "G" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? Math.round(n / 1e3) + "K" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(Math.round(n)));
+// nanojoules as nJ, µJ or mJ, like snn_core::energy::joules
+const joules = (nj) => { const [v, u] = nj >= 1e6 ? [nj / 1e6, "mJ"] : nj >= 1e3 ? [nj / 1e3, "µJ"] : [nj, "nJ"]; return (v >= 10 ? Math.round(v) : v.toFixed(2)) + " " + u; };
 
 function renderStats() {
   const g = S.progress, m = S.meta;
@@ -342,8 +346,17 @@ function renderStats() {
   $("image-v").textContent = `${(g.index + 1).toLocaleString()}/${g.total.toLocaleString()}`;
   $("clock-v").textContent = fmtTime(g.steps);
   $("ips-v").textContent = S.state.paused || S.state.done ? "0" : Math.round(g.ips).toLocaleString();
-  $("spk-v").textContent = g.synops > 0 ? compact(g.spikes) : "–";
-  $("syn-v").textContent = g.synops > 0 ? compact(g.synops) : "–";
+  const counted = g.synops + g.macs > 0;
+  $("spk-v").textContent = counted ? compact(g.spikes) : "–";
+  $("syn-v").textContent = counted ? compact(g.synops) : "–";
+  const nj = $("nj-v");
+  nj.textContent = counted ? joules(g.nj) : "–";
+  if (counted && m.denseNj > 0) {
+    const r = g.nj / m.denseNj, u = document.createElement("span");
+    u.className = "unit"; u.textContent = (r >= 10 ? Math.round(r) : r.toFixed(2)) + "× ANN";
+    nj.append(u);
+    $("nj-tile").title = $("nj-tile").title.split("\n")[0] + `\ndense ANN: ${joules(m.denseNj)}` + (g.macs > 0 ? ` · ${compact(g.macs)} MACs / img here` : "");
+  }
   if (view && view.stats) view.stats();
 }
 

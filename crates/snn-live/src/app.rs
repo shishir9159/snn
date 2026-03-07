@@ -3,8 +3,8 @@
 
 use crate::{frame, server, Hub};
 use snn_core::dataset::{self, Dataset};
-use snn_core::energy::compact;
-use snn_core::{Control, EpochResult, ImageInfo, Rng};
+use snn_core::energy::{compact, joules};
+use snn_core::{Control, Costs, EpochResult, ImageInfo, Rng};
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -137,6 +137,8 @@ pub fn load_data(a: &Args) -> Result<(Dataset, Dataset), String> {
 pub struct Printer {
     every: usize,
     t0: Instant,
+    /// MACs per image of a dense ANN with the model's layers
+    dense: u64,
 }
 
 impl Printer {
@@ -144,6 +146,15 @@ impl Printer {
         Self {
             every: (train_len / 10).max(1),
             t0: Instant::now(),
+            dense: 0,
+        }
+    }
+
+    /// Compares the energy per image with a dense ANN of `macs` per image.
+    pub fn dense(self, macs: u64) -> Self {
+        Self {
+            dense: macs,
+            ..self
         }
     }
 
@@ -167,23 +178,35 @@ impl Printer {
         let test = e
             .test_accuracy
             .map_or("-".into(), |a| format!("{:.1}%", a * 100.0));
-        let a = e.activity;
-        let events = if a.synops > 0.0 {
-            format!(
-                "  {} spikes {} synops / img",
-                compact(a.spikes),
-                compact(a.synops)
-            )
-        } else {
-            String::new()
-        };
         println!(
-            "epoch {} done: train {:.1}%  test {}  ({:.0} img/s){events}",
+            "epoch {} done: train {:.1}%  test {}  ({:.0} img/s){}",
             e.epoch + 1,
             e.train_accuracy * 100.0,
             test,
-            e.images_per_sec
+            e.images_per_sec,
+            self.costs(e)
         );
+    }
+
+    // spikes, operations and energy per image, if the model counts them
+    fn costs(&self, e: &EpochResult) -> String {
+        let a = e.activity;
+        if a.synops + a.macs == 0.0 {
+            return String::new();
+        }
+        let mut s = format!(
+            "  {} spikes {} synops",
+            compact(a.spikes),
+            compact(a.synops)
+        );
+        if a.macs > 0.0 {
+            s += &format!(" {} MACs", compact(a.macs));
+        }
+        s += &format!(" / img  {}", joules(Costs::FP32.nanojoules(a)));
+        if self.dense > 0 {
+            s += &format!(" vs {} dense", joules(Costs::FP32.dense(self.dense)));
+        }
+        s
     }
 }
 
@@ -270,5 +293,29 @@ mod tests {
         assert!(parse("--bind lan").unwrap_err().contains("bad value"));
         assert!(parse("--bogus 1").unwrap_err().contains("unknown"));
         assert_eq!(parse("--help").unwrap_err(), "");
+    }
+
+    #[test]
+    fn epoch_line_prices_the_operations() {
+        let mut e = EpochResult {
+            epoch: 0,
+            train_accuracy: 0.5,
+            test_accuracy: None,
+            images_per_sec: 10.0,
+            activity: Default::default(),
+            confusion: None,
+        };
+        let p = Printer::new(10).dense(100_000);
+        assert_eq!(p.costs(&e), "", "nothing counted, nothing printed");
+        e.activity.spikes = 50.0;
+        e.activity.synops = 20_000.0;
+        assert_eq!(
+            p.costs(&e),
+            "  50 spikes 20K synops / img  18 nJ vs 460 nJ dense"
+        );
+        e.activity.macs = 2e6;
+        assert!(Printer::new(10)
+            .costs(&e)
+            .ends_with("2.0M MACs / img  9.22 µJ"));
     }
 }

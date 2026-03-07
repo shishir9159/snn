@@ -111,7 +111,8 @@ mod tests {
             p.per_image(),
             PerImage {
                 spikes: 20.0,
-                synops: 200.0
+                synops: 200.0,
+                macs: 0.0
             }
         );
     }

@@ -36,6 +36,8 @@ pub struct Net {
     /// mean squared input trace this step, what the input error would be unexplained
     pub input_energy: f32,
     drive: Vec<f32>,
+    /// multiply-accumulates since the last reset, one per nonzero graded operand
+    macs: u64,
 }
 
 impl Net {
@@ -64,6 +66,7 @@ impl Net {
             energy: vec![0.0; below.len()],
             input_energy: 0.0,
             drive: vec![0.0; sizes.iter().copied().max().unwrap()],
+            macs: 0,
             sizes,
             p,
         }
@@ -76,6 +79,12 @@ impl Net {
         self.lat.iter_mut().for_each(Lif::reset);
         self.pred.iter_mut().for_each(|x| x.fill(0.0));
         self.err.iter_mut().for_each(|x| x.fill(0.0));
+        self.macs = 0;
+    }
+
+    /// MACs per image of a dense ANN with the same layers.
+    pub fn dense_macs(&self) -> u64 {
+        self.sizes.windows(2).map(|s| (s[0] * s[1]) as u64).sum()
     }
 
     /// Simulates step `t` of a presentation; with `learn`, applies ST-LRA.
@@ -92,6 +101,8 @@ impl Net {
         // latents: last step's errors from below through E, minus their own
         for l in 0..self.lat.len() {
             let (n, below) = (self.sizes[l + 1], self.sizes[l]);
+            let graded = self.err[l].iter().filter(|&&e| e != 0.0).count();
+            self.macs += (n * graded) as u64;
             let drive = &mut self.drive[..n];
             for (d, row) in drive.iter_mut().zip(self.e[l].chunks_exact(below)) {
                 *d = dot(row, &self.err[l]);
@@ -117,6 +128,7 @@ impl Net {
                 if z != 0.0 {
                     let col = &self.w[l][j * n..][..n];
                     pred.iter_mut().zip(col).for_each(|(m, &w)| *m += w * z);
+                    self.macs += n as u64;
                 }
             }
             let actual = if l == 0 { &self.zx } else { &self.lat[l - 1].z };
@@ -175,16 +187,17 @@ impl Net {
         self.end(learn);
     }
 
-    /// Spikes of the last presentation and the synapses they reach: an input
-    /// spike reaches its error unit, a latent spike the units below it through
-    /// its prediction weights.
+    /// Spikes of the last presentation and the operations they cost. An input
+    /// spike only bumps its trace; everything else moves graded values, errors
+    /// up through E and traces down through W, every step.
     pub fn activity(&self, input_spikes: u64) -> Activity {
-        let mut a = Activity::fan(input_spikes, 1);
-        for (l, lat) in self.lat.iter().enumerate() {
-            let fired: u64 = lat.counts.iter().map(|&c| c as u64).sum();
-            a += Activity::fan(fired, self.sizes[l] as u64);
-        }
-        a
+        let fired: u64 = self
+            .lat
+            .iter()
+            .flat_map(|l| &l.counts)
+            .map(|&c| c as u64)
+            .sum();
+        Activity::new(input_spikes + fired, input_spikes).with_macs(self.macs)
     }
 
     /// Each latent unit's spike count this image, square-rooted to tame bursts.
@@ -318,27 +331,31 @@ mod tests {
     }
 
     #[test]
-    fn activity_follows_spikes_through_their_fan_out() {
+    fn activity_counts_a_mac_per_nonzero_graded_operand() {
         let mut net = Net::new(784, small(), &mut Rng::new(5));
         let tr = encode(&bar(true), &net.p, 7);
         net.reset();
-        let mut inputs = 0u64;
+        let nonzero = |v: &[f32]| v.iter().filter(|&&x| x != 0.0).count() as u64;
+        let (mut inputs, mut macs) = (0u64, 0u64);
         for t in 1..=tr.steps() {
+            // last step's errors climb, this step's traces predict
+            macs += 20 * nonzero(&net.err[0]) + 10 * nonzero(&net.err[1]);
             net.step(t, &tr, true);
+            macs += 784 * nonzero(&net.lat[0].z) + 20 * nonzero(&net.lat[1].z);
             inputs += net.input.len() as u64;
         }
-        let counts: Vec<u64> = net
+        let fired: u64 = net
             .lat
             .iter()
-            .map(|l| l.counts.iter().map(|&c| c as u64).sum())
-            .collect();
-        assert!(
-            inputs > 0 && counts[0] > 0,
-            "the bar drives the first layer"
-        );
+            .flat_map(|l| &l.counts)
+            .map(|&c| c as u64)
+            .sum();
+        assert!(inputs > 0 && fired > 0, "the bar drives the latents");
         let a = net.activity(inputs);
-        assert_eq!(a.spikes, inputs + counts[0] + counts[1]);
-        assert_eq!(a.synops, inputs + counts[0] * 784 + counts[1] * 20);
+        assert_eq!((a.spikes, a.synops, a.macs), (inputs + fired, inputs, macs));
+        // errors are graded and dense once anything is predicted
+        assert!(macs > tr.steps() as u64 * 20 * 784 / 2, "{macs}");
+        assert_eq!(net.dense_macs(), 784 * 20 + 20 * 10);
         net.reset();
         assert_eq!(net.activity(0), Activity::default());
     }

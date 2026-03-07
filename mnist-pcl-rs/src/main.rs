@@ -95,7 +95,7 @@ fn session<D: Input + Send + 'static>(a: Args, p: Params, train: D, test: D) -> 
     let side = train.retina(&saccades);
     let mut trainer = Trainer::with_retina(p.clone(), side, classes, a.seed);
     let epochs = a.epochs();
-    let printer = Printer::new(train.len());
+    let printer = Printer::new(train.len()).dense(trainer.dense_macs());
 
     if a.headless {
         let ctl = Control::new(0);
@@ -116,6 +116,7 @@ fn session<D: Input + Send + 'static>(a: Args, p: Params, train: D, test: D) -> 
         epochs,
         steps: train.steps(&saccades),
         dt_ms: 1.0,
+        dense_macs: trainer.dense_macs(),
     };
     let (net, k) = (&trainer.net, p.features);
     let pops = [

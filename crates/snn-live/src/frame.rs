@@ -4,7 +4,7 @@
 //! Kinds below 16 are shared by every model, except 3, 4, 5 and 9 which belong
 //! to the winner-take-all model (mnist-snn-rs). Other models use 16 and up.
 
-use snn_core::{Confusion, EpochResult, ImageInfo, PerImage};
+use snn_core::{Confusion, Costs, EpochResult, ImageInfo, PerImage};
 
 pub const META: u8 = 1;
 pub const IMAGE: u8 = 2;
@@ -119,6 +119,8 @@ pub struct Meta<'a> {
     /// simulation steps per image
     pub steps: usize,
     pub dt_ms: f32,
+    /// MACs per image of a dense ANN with the model's layers, 0 if unknown
+    pub dense_macs: u64,
 }
 
 pub fn meta(b: &mut Buf, m: &Meta) {
@@ -133,6 +135,7 @@ pub fn meta(b: &mut Buf, m: &Meta) {
     b.f32(m.dt_ms);
     b.str(m.model);
     b.str(m.dataset);
+    b.f32(Costs::FP32.dense(m.dense_macs));
     b.end();
 }
 
@@ -310,6 +313,8 @@ pub fn progress(b: &mut Buf, p: &Progress) {
     b.f32(p.images_per_sec);
     b.f32(p.activity.spikes);
     b.f32(p.activity.synops);
+    b.f32(p.activity.macs);
+    b.f32(Costs::FP32.nanojoules(p.activity));
     b.end();
 }
 
@@ -476,6 +481,7 @@ mod tests {
             activity: PerImage {
                 spikes: 12.0,
                 synops: 3400.0,
+                macs: 0.0,
             },
             confusion: None,
         };
@@ -540,6 +546,7 @@ mod tests {
             epochs: 1,
             steps: 200,
             dt_ms: 1.0,
+            dense_macs: 1000,
         };
         meta(&mut b, &m);
         let ps = [
@@ -554,8 +561,9 @@ mod tests {
         pops(&mut b, &ps);
         let bytes = b.take();
         let r = records(&bytes);
-        assert_eq!(r[0].1.len(), 21 + 5 + 11);
+        assert_eq!(r[0].1.len(), 21 + 5 + 11 + 4);
         assert_eq!(&r[0].1[21..26], b"\x03\x00wta");
+        assert_eq!(f32::from_le_bytes(r[0].1[37..41].try_into().unwrap()), 4.6);
         let p = r[1].1;
         assert_eq!(p[5], 2, "two params");
         assert_eq!(&p[6..12], b"\x04\x00Leak");
