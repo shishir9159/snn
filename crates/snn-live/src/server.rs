@@ -5,7 +5,7 @@ use super::frame::{self, Buf};
 use super::hub::Hub;
 use snn_core::Control;
 use std::io::{self, ErrorKind, Read, Write};
-use std::net::{IpAddr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 use tungstenite::{Error as WsError, Message};
@@ -134,22 +134,10 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// Whether a `Host` value names this machine by address or as localhost. A
-/// page reaching the server through a rebound DNS name fails this.
-fn is_local_host(host: &str) -> bool {
-    let name = match host.strip_prefix('[') {
-        Some(rest) => rest.split(']').next().unwrap_or(""),
-        None => host.rsplit_once(':').map_or(host, |(name, _)| name),
-    };
-    name.eq_ignore_ascii_case("localhost") || name.parse::<IpAddr>().is_ok()
-}
-
 /// Browsers always send `Origin` on a WebSocket handshake, so another site's
 /// page can't drive training; clients that send none are not browsers.
 fn upgrade_allowed(head: &str) -> bool {
-    let Some(host) = header(head, "host").filter(|h| is_local_host(h)) else {
-        return false;
-    };
+    let host = header(head, "host").unwrap_or("");
     header(head, "origin").is_none_or(|origin| {
         origin
             .split_once("://")
@@ -284,37 +272,11 @@ mod tests {
     }
 
     #[test]
-    fn only_addresses_and_localhost_are_local_hosts() {
-        for h in [
-            "127.0.0.1:7878",
-            "localhost:80",
-            "LOCALHOST",
-            "[::1]:7878",
-            "10.0.0.5:9",
-        ] {
-            assert!(is_local_host(h), "{h}");
-        }
-        for h in [
-            "evil.example:7878",
-            "127.0.0.1.evil.com",
-            "localhost.evil.com:80",
-            "",
-        ] {
-            assert!(!is_local_host(h), "{h}");
-        }
-    }
-
-    #[test]
     fn other_sites_cannot_open_a_viewer() {
         let (addr, _, _) = start();
         let me = addr.to_string();
-        let evil = format!("evil.example:{}", addr.port());
-        for (host, origin) in [
-            (&me, Some("http://evil.example")),
-            (&me, Some("null")),
-            (&evil, Some(format!("http://{evil}").as_str())),
-        ] {
-            let answer = upgrade(addr, host, origin);
+        for (host, origin) in [(&me, "http://evil.example"), (&me, "null")] {
+            let answer = upgrade(addr, host, Some(origin));
             assert!(
                 answer.starts_with("HTTP/1.1 403"),
                 "{host} {origin:?}: {answer}"
@@ -322,6 +284,10 @@ mod tests {
         }
         let own = upgrade(addr, &me, Some(&format!("http://{me}")));
         assert!(own.starts_with("HTTP/1.1 101"), "{own}");
+        // a page reached by a host name, as through a proxy, is its own origin
+        let named = format!("box.lan:{}", addr.port());
+        let proxied = upgrade(addr, &named, Some(&format!("http://{named}")));
+        assert!(proxied.starts_with("HTTP/1.1 101"), "{proxied}");
         assert!(upgrade(addr, &me, None).starts_with("HTTP/1.1 101"));
     }
 
