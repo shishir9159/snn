@@ -51,16 +51,27 @@ def test_best_of_keeps_the_fastest_round_per_side():
     assert best == {"base": {"a": 8.0}, "new": {"a": 6.0}}
 
 
-def test_report_shows_the_change_against_a_base(capsys):
+def figures(test, nj):
+    return {"train %": 66.8, "test %": test, "img/s": 12840.0, "spikes/img": 769.0,
+            "synops/img": 31000.0, "MACs/img": 0.0, "nJ/img": nj, "dense nJ": 144.0}
+
+
+def test_summary_is_the_mean_and_sample_spread_over_seeds():
+    s = b.summary([figures(70.0, 27.0), figures(74.0, 29.0), figures(72.0, 28.0)])
+    assert s["test %"] == (72.0, 2.0)
+    assert s["nJ/img"][0] == 28.0 and s["train %"][1] == 0.0
+    assert b.summary([figures(70.0, 27.0)])["test %"] == (70.0, None)
+
+
+def test_report_shows_the_change_against_a_base_and_the_seed_spread(capsys):
     rows = [("wta", "present", 90.0, 100.0), ("pcl", "network", 50.0, None)]
-    quality = [("wta", 1, {"train %": 66.8, "test %": 71.3, "img/s": 12840.0,
-                           "spikes/img": 769.0, "synops/img": 31000.0, "MACs/img": 0.0,
-                           "nJ/img": 27.9, "dense nJ": 144.0})]
-    b.report(rows, quality, 5, 6000, 1000)
+    quality = [("wta", 1, [figures(70.0, 27.0), figures(74.0, 29.0)])]
+    b.report(rows, quality, 5, 6000, 1000, [1, 2])
     out = capsys.readouterr().out
     assert "-10.0% vs 100.0" in out
     assert "best of 5" in out and "6000 training and 1000 test" in out
-    assert "71.3" in out and "31,000" in out and "epochs" in out
+    assert "seeds 1-2" in out and "72.0 ± 2.8" in out
+    assert "31,000" in out and "epochs" in out
     assert "0.19" in out, "energy against the dense ANN"
     pcl = next(line for line in out.splitlines() if "network" in line)
     assert "%" not in pcl
