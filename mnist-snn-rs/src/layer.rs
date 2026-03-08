@@ -1,8 +1,8 @@
 //! Winner-take-all output layer fully connected to the input spike train.
 
 use crate::neuron::Neuron;
-use crate::params::Params;
-use crate::stdp::Stdp;
+use crate::params::{Params, Rule};
+use crate::stdp::{PostTrace, Stdp, Triplet};
 use snn_core::encode::SpikeTrain;
 use snn_core::rng::Rng;
 use snn_core::weights;
@@ -53,6 +53,24 @@ impl Outcome {
     }
 }
 
+/// What a training presentation under [`Rule::Reward`] is told: neuron j
+/// answers class `j % classes`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Reward {
+    pub label: u8,
+    pub classes: usize,
+    /// learning-rate scale of a right answer and of a wrong one
+    pub reward: f32,
+    pub punish: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Learn {
+    Off,
+    On,
+    Reward(Reward),
+}
+
 #[derive(Debug, Clone)]
 pub struct Layer {
     pub n_in: usize,
@@ -66,6 +84,9 @@ pub struct Layer {
     /// homeostatic threshold scale: threshold = base * (1 + theta)
     pub theta: Vec<f32>,
     stdp: Stdp,
+    triplet: Triplet,
+    /// each neuron's triplet traces within the presentation
+    post: Vec<PostTrace>,
     thresholds: Vec<f32>,
     fired: Vec<u16>,
     /// the weight grid, when the weights are stored in fewer bits
@@ -111,6 +132,8 @@ impl Layer {
             neurons: vec![Neuron::new(&p.lif); n_out],
             theta: vec![0.0; n_out],
             stdp: Stdp::new(&p.stdp),
+            triplet: Triplet::new(&p.stdp, p.time_steps),
+            post: vec![PostTrace::default(); n_out],
             thresholds: vec![0.0; n_out],
             fired: Vec::with_capacity(n_out),
             quant,
@@ -140,8 +163,8 @@ impl Layer {
         }
     }
 
-    /// Runs one image through the layer. With `learn`, applies STDP on every
-    /// output spike and updates homeostasis afterwards.
+    /// Runs one image through the layer. With `learn`, applies the pair or
+    /// triplet rule on every output spike and updates homeostasis afterwards.
     pub fn present<O: Observer>(
         &mut self,
         train: &SpikeTrain,
@@ -149,8 +172,34 @@ impl Layer {
         learn: bool,
         obs: &mut O,
     ) -> Outcome {
+        let learn = if learn { Learn::On } else { Learn::Off };
+        self.run(train, p, learn, obs)
+    }
+
+    /// A training presentation under reward-modulated STDP: once the winner
+    /// answers, its spikes apply the pair rule scaled by `r.reward` if the
+    /// answer is right, and depress the inputs around them scaled by
+    /// `r.punish` if it is wrong.
+    pub fn present_rewarded<O: Observer>(
+        &mut self,
+        train: &SpikeTrain,
+        p: &Params,
+        r: Reward,
+        obs: &mut O,
+    ) -> Outcome {
+        self.run(train, p, Learn::Reward(r), obs)
+    }
+
+    fn run<O: Observer>(
+        &mut self,
+        train: &SpikeTrain,
+        p: &Params,
+        learn: Learn,
+        obs: &mut O,
+    ) -> Outcome {
         assert_eq!(train.n_inputs(), self.n_in);
         let lif = &p.lif;
+        let triplet = learn == Learn::On && p.rule == Rule::Triplet;
         // a blank image gives no drive; keep the threshold above rest
         let base = (train.max_simultaneous() as f32 / p.threshold_div).max(1.0);
         for (th, &theta) in self.thresholds.iter_mut().zip(&self.theta) {
@@ -159,9 +208,12 @@ impl Layer {
         for n in &mut self.neurons {
             n.reset(lif);
         }
+        self.post.fill(PostTrace::default());
         let mut spikes = vec![0u32; self.n_out];
         let mut input_spikes = 0u32;
         let mut winner = None;
+        // sign and size of the pair rule for the winner, set by a reward
+        let mut scale = 1.0;
         let mut fired = std::mem::take(&mut self.fired);
 
         for t in 1..=train.steps() {
@@ -189,28 +241,40 @@ impl Layer {
                             n.inhibit(lif);
                         }
                     }
+                    if let Learn::Reward(r) = learn {
+                        let right = w % r.classes == r.label as usize;
+                        scale = if right { r.reward } else { -r.punish };
+                    }
                 }
+            }
+            if triplet {
+                self.depress_on_pre(active, t, p);
             }
 
             fired.clear();
             let rows = self.weights.chunks_exact_mut(self.n_in);
             for (j, (n, row)) in self.neurons.iter_mut().zip(rows).enumerate() {
-                if n.fire(ti, self.thresholds[j], lif) {
-                    fired.push(j as u16);
-                    spikes[j] += 1;
-                    if learn {
-                        match &self.quant {
-                            Some(q) => {
-                                let rng = &mut self.qrng;
-                                self.stdp
-                                    .post_spike_rounded(row, train, t, |w| q.snap(w, rng));
-                            }
-                            None => self.stdp.post_spike(row, train, t),
-                        }
-                    }
+                if !n.fire(ti, self.thresholds[j], lif) {
+                    continue;
+                }
+                fired.push(j as u16);
+                spikes[j] += 1;
+                if learn == Learn::Off {
+                    continue;
+                }
+                let (quant, rng) = (&self.quant, &mut self.qrng);
+                let round = |w: f32| match quant {
+                    Some(q) => q.snap(w, rng),
+                    None => w,
+                };
+                if triplet {
+                    let o = &mut self.post[j];
+                    self.triplet.post_spike(row, train, t, o, round);
+                } else {
+                    self.stdp.post_spike_rounded(row, train, t, scale, round);
                 }
             }
-            if learn {
+            if learn != Learn::Off {
                 for &j in &fired {
                     self.sync(j as usize);
                 }
@@ -227,11 +291,14 @@ impl Layer {
         }
         self.fired = fired;
 
-        if learn {
+        if learn != Learn::Off {
             if let Some(w) = winner {
                 let row = &mut self.weights[w * self.n_in..(w + 1) * self.n_in];
-                self.stdp.depress_silent(row, train, p.silent_penalty);
-                normalize(row, p.w_norm, p.stdp.w_max);
+                // a punished winner keeps its silent inputs and loses weight
+                if scale > 0.0 {
+                    self.stdp.depress_silent(row, train, p.silent_penalty);
+                    normalize(row, p.w_norm, p.stdp.w_max);
+                }
                 if let Some(q) = &self.quant {
                     q.apply(row, &mut self.qrng);
                 }
@@ -250,6 +317,26 @@ impl Layer {
             spikes,
             input_spikes,
             base_threshold: base,
+        }
+    }
+
+    // triplet depression: inputs spiking at `t` onto neurons that fired before
+    fn depress_on_pre(&mut self, active: &[u16], t: usize, p: &Params) {
+        for j in 0..self.n_out {
+            let dw = self.triplet.pre_spike(&self.post[j], t);
+            if dw == 0.0 {
+                continue;
+            }
+            for &i in active {
+                let i = i as usize;
+                let w = &mut self.weights[j * self.n_in + i];
+                let mut v = crate::stdp::bounded(*w, dw, &p.stdp);
+                if let Some(q) = &self.quant {
+                    v = q.snap(v, &mut self.qrng);
+                }
+                *w = v;
+                self.by_input[i * self.n_out + j] = v;
+            }
         }
     }
 

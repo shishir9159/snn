@@ -176,6 +176,7 @@ fn model_params(p: &Params) -> Vec<Param<'static>> {
         Param::num("Floor", p.lif.floor, ""),
         Param::text("Weights", weight_range(p)),
         Param::num("Learning rate", p.stdp.sigma, ""),
+        Param::text("Rule", p.rule.to_string()),
     ]
 }
 

@@ -2,6 +2,44 @@
 //! tuning on MNIST showed otherwise (noted inline).
 
 use snn_core::encode::EncodeParams;
+use std::fmt;
+use std::str::FromStr;
+
+/// How the winner's weights learn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rule {
+    /// pair STDP around every post spike
+    Pair,
+    /// minimal triplet STDP (Pfister & Gerstner 2006)
+    Triplet,
+    /// pair STDP gated by reward: neuron j answers class j mod classes, a right
+    /// first spike is rewarded and a wrong one punished (Mozafari et al. 2018)
+    Reward,
+}
+
+impl FromStr for Rule {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "pair" => Ok(Rule::Pair),
+            "triplet" => Ok(Rule::Triplet),
+            "reward" => Ok(Rule::Reward),
+            _ => Err(format!("{s} is not pair, triplet or reward")),
+        }
+    }
+}
+
+impl fmt::Display for Rule {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let name = match self {
+            Rule::Pair => "pair",
+            Rule::Triplet => "triplet",
+            Rule::Reward => "reward",
+        };
+        f.write_str(name)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LifParams {
@@ -29,6 +67,16 @@ pub struct StdpParams {
     pub sigma: f32,
     pub w_min: f32,
     pub w_max: f32,
+    /// triplet rule: time constants of the pre trace and of the fast and slow
+    /// post traces, steps
+    pub tau_r: f32,
+    pub tau_o: f32,
+    pub tau_y: f32,
+    /// triplet rule: potentiation per pre trace at a post spike, alone and
+    /// times the slow post trace; depression per fast post trace at a pre spike
+    pub a2_ltp: f32,
+    pub a3_ltp: f32,
+    pub a2_ltd: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +103,7 @@ pub struct Params {
     /// round learned weights up with the probability of the step they gained,
     /// instead of to the nearest level, so updates below a step still add up
     pub stochastic_rounding: bool,
+    pub rule: Rule,
 }
 
 impl Default for LifParams {
@@ -81,6 +130,13 @@ impl Default for StdpParams {
             // reference: -1.2; negative weights made most images drive no neuron
             w_min: 0.0,
             w_max: 2.0,
+            // Pfister & Gerstner's minimal visual-cortex fit; amplitudes tuned on MNIST
+            tau_r: 16.8,
+            tau_o: 33.7,
+            tau_y: 114.0,
+            a2_ltp: 0.0,
+            a3_ltp: 0.4,
+            a2_ltd: 0.01,
         }
     }
 }
@@ -100,6 +156,7 @@ impl Default for Params {
             w_init: (0.0, 0.4),
             weight_bits: 0,
             stochastic_rounding: true,
+            rule: Rule::Pair,
         }
     }
 }
@@ -112,6 +169,7 @@ snn_core::tunable!(Params {
     "theta_rate" => theta_rate,
     "weight_bits" => weight_bits,
     "stochastic_rounding" => stochastic_rounding,
+    "rule" => rule,
     "rest" => lif.rest,
     "floor" => lif.floor,
     "leak" => lif.leak,
@@ -125,6 +183,12 @@ snn_core::tunable!(Params {
     "sigma" => stdp.sigma,
     "w_min" => stdp.w_min,
     "w_max" => stdp.w_max,
+    "tau_r" => stdp.tau_r,
+    "tau_o" => stdp.tau_o,
+    "tau_y" => stdp.tau_y,
+    "a2_ltp" => stdp.a2_ltp,
+    "a3_ltp" => stdp.a3_ltp,
+    "a2_ltd" => stdp.a2_ltd,
     "pot_min" => encode.pot_min,
     "pot_max" => encode.pot_max,
     "freq_min" => encode.freq_min,
@@ -143,10 +207,10 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), Params::KEYS.len(), "a name appears twice");
         for key in Params::KEYS {
-            let value = if *key == "stochastic_rounding" {
-                "false"
-            } else {
-                "1"
+            let value = match *key {
+                "stochastic_rounding" => "false",
+                "rule" => "triplet",
+                _ => "1",
             };
             Params::default().set(key, value).unwrap();
         }
@@ -160,6 +224,10 @@ mod tests {
         );
         p.set("weight_bits", "4").unwrap();
         assert_eq!(p.weight_bits, 4);
+        p.set("rule", "reward").unwrap();
+        assert_eq!(p.rule, Rule::Reward);
+        assert!(p.set("rule", "hebb").is_err());
+        assert_eq!(Rule::Triplet.to_string().parse(), Ok(Rule::Triplet));
         assert!(p.set("leek", "1").is_err());
         assert!(p.set("t_ref", "1.5").is_err());
     }

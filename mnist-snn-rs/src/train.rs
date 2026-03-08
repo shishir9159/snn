@@ -1,7 +1,7 @@
 //! Training loop: presents images, labels neurons by the classes they win, tracks accuracy.
 
-use crate::layer::{Layer, Observer, Outcome, Step};
-use crate::params::Params;
+use crate::layer::{Layer, Observer, Outcome, Reward, Step};
+use crate::params::{Params, Rule};
 use snn_core::encode::{receptive_field, SpikeTrain};
 use snn_core::{Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Recent, Rng};
 use snn_live::app::Printer;
@@ -10,11 +10,13 @@ use std::time::Instant;
 /// Images in the running-accuracy window.
 const RECENT: usize = 500;
 
-/// Per-neuron class counts with forgetting, so labels follow the weights as they change.
+/// Per-neuron class counts with forgetting, so labels follow the weights as
+/// they change; or a fixed class per neuron, as reward learning needs.
 #[derive(Debug, Clone)]
 pub struct Labels {
     classes: usize,
     counts: Vec<f32>,
+    fixed: bool,
 }
 
 impl Labels {
@@ -24,10 +26,23 @@ impl Labels {
         Self {
             classes,
             counts: vec![0.0; n_out * classes],
+            fixed: false,
+        }
+    }
+
+    /// Neuron j stands for class `j % classes` whatever it wins.
+    pub fn fixed(classes: usize) -> Self {
+        Self {
+            classes,
+            counts: Vec::new(),
+            fixed: true,
         }
     }
 
     pub fn record(&mut self, neuron: usize, class: u8) {
+        if self.fixed {
+            return;
+        }
         let row = &mut self.counts[neuron * self.classes..(neuron + 1) * self.classes];
         row.iter_mut().for_each(|c| *c *= Self::DECAY);
         row[class as usize] += 1.0;
@@ -35,6 +50,9 @@ impl Labels {
 
     /// Class the neuron wins most, if it has won anything.
     pub fn of(&self, neuron: usize) -> Option<u8> {
+        if self.fixed {
+            return Some((neuron % self.classes) as u8);
+        }
         let row = &self.counts[neuron * self.classes..(neuron + 1) * self.classes];
         let (best, &n) = row.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1))?;
         (n > 0.0).then_some(best as u8)
@@ -133,7 +151,10 @@ impl Trainer {
     }
 
     pub fn with_layer(params: Params, layer: Layer, classes: usize, rng: Rng) -> Self {
-        let labels = Labels::new(layer.n_out, classes);
+        let labels = match params.rule {
+            Rule::Reward => Labels::fixed(classes),
+            _ => Labels::new(layer.n_out, classes),
+        };
         Self {
             params,
             layer,
@@ -173,7 +194,20 @@ impl Trainer {
             ctl,
             learn: info.learn,
         };
-        let outcome = self.layer.present(&self.train, p, info.learn, &mut hook);
+        let outcome = if info.learn && p.rule == Rule::Reward {
+            // as in Mozafari et al., rewards scale with the miss rate and
+            // punishments with the hit rate, so learning settles as answers improve
+            let hit = self.recent.rate();
+            let r = Reward {
+                label: info.label,
+                classes: self.labels.classes(),
+                reward: 1.0 - hit,
+                punish: hit,
+            };
+            self.layer.present_rewarded(&self.train, p, r, &mut hook)
+        } else {
+            self.layer.present(&self.train, p, info.learn, &mut hook)
+        };
         let activity = outcome.activity(self.layer.n_out);
         let predicted = outcome.winner.and_then(|w| self.labels.of(w));
         let correct = predicted == Some(info.label);
@@ -346,6 +380,29 @@ mod tests {
             let r = t.fit(&train, Some(&test), 1, &mut (), &Control::new(0));
             let acc = r[0].test_accuracy.unwrap();
             assert!(acc > 0.35, "{bits} bits: test accuracy {acc}");
+        }
+    }
+
+    #[test]
+    fn fixed_labels_follow_the_neuron_index() {
+        let mut l = Labels::fixed(10);
+        l.record(3, 7);
+        assert_eq!((l.of(3), l.of(13), l.of(0)), (Some(3), Some(3), Some(0)));
+    }
+
+    #[test]
+    fn every_rule_learns_synthetic_digits() {
+        let train = synthetic(2000, 1);
+        let test = synthetic(300, 2);
+        for rule in [Rule::Triplet, Rule::Reward] {
+            let p = Params {
+                rule,
+                ..Params::default()
+            };
+            let mut t = Trainer::new(p, 784, 40, 10, 7);
+            let r = t.fit(&train, Some(&test), 1, &mut (), &Control::new(0));
+            let acc = r[0].test_accuracy.unwrap();
+            assert!(acc > 0.4, "{rule}: test accuracy {acc}");
         }
     }
 
