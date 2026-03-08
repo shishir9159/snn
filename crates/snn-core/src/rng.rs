@@ -35,6 +35,12 @@ impl Rng {
         (((self.next_u64() >> 32) * n as u64) >> 32) as usize
     }
 
+    /// Standard normal, by Box-Muller.
+    pub fn normal(&mut self) -> f32 {
+        let u = 1.0 - self.f32();
+        (-2.0 * u.ln()).sqrt() * (std::f32::consts::TAU * self.f32()).cos()
+    }
+
     pub fn shuffle<T>(&mut self, v: &mut [T]) {
         for i in (1..v.len()).rev() {
             v.swap(i, self.below(i + 1));
@@ -64,6 +70,18 @@ mod tests {
             assert!((-0.5..0.5).contains(&r.range(-0.5, 0.5)));
             assert!(r.below(7) < 7);
         }
+    }
+
+    #[test]
+    fn normal_has_unit_spread() {
+        let mut r = Rng::new(11);
+        let v: Vec<f32> = (0..20_000).map(|_| r.normal()).collect();
+        let mean = v.iter().sum::<f32>() / v.len() as f32;
+        let var = v.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / v.len() as f32;
+        assert!(
+            mean.abs() < 0.03 && (var - 1.0).abs() < 0.05,
+            "{mean} {var}"
+        );
     }
 
     #[test]

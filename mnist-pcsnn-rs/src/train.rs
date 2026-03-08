@@ -2,7 +2,9 @@
 //! by step for monitors, then infers and learns from the label.
 
 use crate::{Net, Params};
-use snn_core::{Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Recent, Rng};
+use snn_core::{
+    Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Perturb, Recent, Rng,
+};
 use snn_live::app::Printer;
 use std::time::Instant;
 
@@ -115,6 +117,8 @@ impl Monitor for Printer {
 
 pub struct Trainer {
     pub net: Net,
+    /// damage done to test images, for robustness curves
+    pub perturb: Option<Perturb>,
     rng: Rng,
     sched: [Schedule; 3],
     recent: Recent,
@@ -126,6 +130,7 @@ impl Trainer {
         let mut rng = Rng::new(seed);
         Self {
             net: Net::new(n_in, classes, p, &mut rng),
+            perturb: None,
             rng,
             sched: Default::default(),
             recent: Recent::new(RECENT),
@@ -146,9 +151,19 @@ impl Trainer {
         mon: &mut M,
         ctl: &Control,
     ) -> ImageResult {
-        let img = data.image(i);
+        let mut noisy = Vec::new();
+        let mut img = data.image(i);
+        let mut damage = self.perturb.as_mut().filter(|_| !info.learn);
+        if let Some(d) = &mut damage {
+            if d.pixels(img, &mut noisy) {
+                img = &noisy;
+            }
+        }
         let net = &mut self.net;
         net.encode(img);
+        if let Some(d) = damage {
+            d.times(&mut net.t_in, net.p.t_max);
+        }
         net.drop_hidden(info.learn.then_some(&mut self.rng));
         let predicted = net.forward();
         let activity = net.activity();

@@ -4,6 +4,7 @@ use mnist_pcl::train::Trainer;
 use mnist_pcl::Params;
 use snn_core::events::Saccades;
 use snn_core::nmnist::Recordings;
+use snn_core::perturb::Kind;
 use snn_core::{Control, Overrides};
 use snn_live::app::{self, Args, Printer};
 use snn_live::frame::{self, Buf, Meta, Param, Pop, Role};
@@ -89,6 +90,20 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
     session(a, o.params, train, test)
 }
 
+// recordings have no pixels to add noise to
+fn robustness<D: Input>(a: &Args, t: &mut Trainer, test: &D) {
+    let ctl = Control::new(0);
+    let images = test.len() > 0 && test.pixels(0).is_some();
+    app::robustness(a, |d| {
+        if d.as_ref().is_some_and(|d| d.kind == Kind::Noise) && !images {
+            return None;
+        }
+        t.perturb = d;
+        Some(t.evaluate(test, 0, &mut (), &ctl).accuracy())
+    });
+    t.perturb = None;
+}
+
 fn session<D: Input + Send + 'static>(a: Args, p: Params, train: D, test: D) -> Result<(), String> {
     let classes = train.classes().max(test.classes());
     let saccades = Saccades::default();
@@ -101,6 +116,7 @@ fn session<D: Input + Send + 'static>(a: Args, p: Params, train: D, test: D) -> 
         let ctl = Control::new(0);
         let test_set = (!test.is_empty()).then_some(&test);
         trainer.fit(&train, test_set, epochs, &mut { printer }, &ctl);
+        robustness(&a, &mut trainer, &test);
         return Ok(());
     }
 
@@ -137,10 +153,12 @@ fn session<D: Input + Send + 'static>(a: Args, p: Params, train: D, test: D) -> 
     frame::series(&mut b, &step, &probe, &image);
     packet.extend(b.take());
 
+    let args = a.clone();
     app::serve_live(&a, packet, move |hub, ctl| {
         let tap = Tap::new(hub, ctl.clone());
         let test_set = (!test.is_empty()).then_some(&test);
         trainer.fit(&train, test_set, epochs, &mut (tap, printer), &ctl);
+        robustness(&args, &mut trainer, &test);
     })
 }
 

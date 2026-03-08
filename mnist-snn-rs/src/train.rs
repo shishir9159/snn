@@ -3,7 +3,9 @@
 use crate::layer::{Layer, Observer, Outcome, Reward, Step};
 use crate::params::{Params, Rule};
 use snn_core::encode::{receptive_field, SpikeTrain};
-use snn_core::{Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Recent, Rng};
+use snn_core::{
+    Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Perturb, Recent, Rng,
+};
 use snn_live::app::Printer;
 use std::time::Instant;
 
@@ -136,6 +138,8 @@ pub struct Trainer {
     pub params: Params,
     pub layer: Layer,
     pub labels: Labels,
+    /// damage done to test images, for robustness curves
+    pub perturb: Option<Perturb>,
     rng: Rng,
     pot: Vec<f32>,
     train: SpikeTrain,
@@ -159,6 +163,7 @@ impl Trainer {
             params,
             layer,
             labels,
+            perturb: None,
             rng,
             pot: Vec::new(),
             train: SpikeTrain::new(),
@@ -181,11 +186,21 @@ impl Trainer {
         mon: &mut M,
         ctl: &Control,
     ) -> ImageResult {
-        let img = data.image(i);
+        let mut noisy = Vec::new();
+        let mut img = data.image(i);
+        let damage = self.perturb.as_mut().filter(|_| !info.learn);
+        if let Some(d) = damage {
+            if d.pixels(img, &mut noisy) {
+                img = &noisy;
+            }
+        }
         receptive_field(img, data.width, data.height, &mut self.pot);
         let p = &self.params;
         self.train
             .encode(&self.pot, p.time_steps, &p.encode, &mut self.rng);
+        if let Some(d) = self.perturb.as_mut().filter(|_| !info.learn) {
+            d.train(&mut self.train);
+        }
         mon.image_start(&info, img, &self.train);
 
         let mut hook = Hook {
@@ -404,6 +419,29 @@ mod tests {
             let acc = r[0].test_accuracy.unwrap();
             assert!(acc > 0.4, "{rule}: test accuracy {acc}");
         }
+    }
+
+    #[test]
+    fn damage_touches_test_images_only() {
+        use snn_core::perturb::Kind;
+        let train = synthetic(600, 1);
+        let test = synthetic(200, 2);
+        let mut t = Trainer::new(Params::default(), 784, 20, 10, 7);
+        let ctl = Control::new(0);
+        t.fit(&train, None, 1, &mut (), &ctl);
+        let clean = t.evaluate(&test, 0, &mut (), &ctl).accuracy();
+        let mut acc = |kind, level| {
+            t.perturb = Some(Perturb::new(kind, level, 3));
+            t.evaluate(&test, 0, &mut (), &ctl).accuracy()
+        };
+        // the threshold follows the input's peak, so only losing everything hurts much
+        assert_eq!(acc(Kind::Dropout, 1.0), 0.0);
+        assert!(acc(Kind::Noise, 1.0) < clean - 0.1, "{clean}");
+        let before = t.layer.weights().to_vec();
+        t.perturb = Some(Perturb::new(Kind::Dropout, 0.9, 3));
+        let w = t.fit(&train, None, 1, &mut (), &ctl)[0].train_accuracy;
+        assert!(w > 0.3, "training images are not damaged: {w}");
+        assert_ne!(t.layer.weights(), before.as_slice());
     }
 
     #[test]

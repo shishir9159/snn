@@ -77,6 +77,34 @@ def test_report_shows_the_change_against_a_base_and_the_seed_spread(capsys):
     assert "%" not in pcl
 
 
+ROBUST = """epoch 1 done: train 66.8%  test 71.3%  (19137 img/s)
+robustness: clean 71.3%
+robustness: pixel noise 0.1 71.7%  0.2 72.5%
+robustness: event dropout 0.1 70.4%  0.7 67.5%
+"""
+
+
+def test_robustness_lines_become_figures():
+    assert b.parse_robustness(ROBUST) == {
+        "robust clean": 71.3, "robust pixel noise 0.1": 71.7, "robust pixel noise 0.2": 72.5,
+        "robust event dropout 0.1": 70.4, "robust event dropout 0.7": 67.5}
+    assert b.parse_robustness("epoch 1 done") == {}
+
+
+def test_robustness_curves_average_seeds_and_start_clean(tmp_path):
+    seed = lambda shift: {"test %": 70.0, **{k: v + shift for k, v in b.parse_robustness(ROBUST).items()}}  # noqa: E731
+    rows = [("wta", 1, [seed(0.0), seed(2.0)]), ("pcl", 1, [{"test %": 1.0}])]
+    curves = b.robustness_curves(rows)
+    assert list(curves) == ["wta"], "a model run without --robustness has no curves"
+    noise = curves["wta"]["pixel noise"]
+    assert noise[0] == (0.0, 72.3, pytest.approx(1.414, abs=1e-3))
+    assert [lv for lv, _, _ in noise] == [0.0, 0.1, 0.2]
+    chart = tmp_path / "r.svg"
+    b.robustness_svg(curves, chart)
+    svg = chart.read_text(encoding="utf-8")
+    assert svg.count("<polyline") == 2 and "wta · event dropout 0.7: 68.5% ± 1.4" in svg
+
+
 def test_an_unknown_model_name_is_refused():
     with pytest.raises(SystemExit):
         b.main(["--only", "nope"])

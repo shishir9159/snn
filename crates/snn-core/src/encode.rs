@@ -166,6 +166,30 @@ impl SpikeTrain {
         }
     }
 
+    /// Moves or drops every spike: `f` maps a spike's step to its new one
+    /// (clamped to the presentation) or to None to drop it.
+    pub fn retime<F: FnMut(u16) -> Option<usize>>(&mut self, mut f: F) {
+        if self.steps == 0 {
+            return;
+        }
+        let mut times = Vec::with_capacity(self.input_times.len());
+        let mut start = Vec::with_capacity(self.input_start.len());
+        for span in self.input_start.windows(2) {
+            let from = times.len();
+            start.push(from as u32);
+            for &t in &self.input_times[span[0] as usize..span[1] as usize] {
+                if let Some(n) = f(t) {
+                    times.push(n.clamp(1, self.steps) as u16);
+                }
+            }
+            times[from..].sort_unstable();
+        }
+        start.push(times.len() as u32);
+        self.input_times = times;
+        self.input_start = start;
+        self.index_by_step();
+    }
+
     pub fn n_inputs(&self) -> usize {
         self.n_inputs
     }
@@ -308,6 +332,26 @@ mod tests {
                 assert!(tr.active(t as usize).contains(&(i as u16)));
             }
         }
+    }
+
+    #[test]
+    fn retime_moves_drops_and_reindexes() {
+        let mut tr = SpikeTrain::new();
+        tr.encode(&[10.0, 0.0, 10.0], 200, &regular(), &mut Rng::new(0));
+        // input 0 and 2 spike at 30, 60, ..., 180; drop the second spike of
+        // each, move the others 25 steps later, past the end for the last
+        let mut k = 0;
+        tr.retime(|t| {
+            k += 1;
+            (k % 6 != 2).then_some(t as usize + 25)
+        });
+        assert_eq!(tr.times(0), &[55, 115, 145, 175, 200]);
+        assert_eq!(tr.times(2), &[55, 115, 145, 175, 200]);
+        assert_eq!(tr.active(200), &[0, 2]);
+        assert!(tr.active(30).is_empty());
+        assert_eq!(tr.total(), 10);
+        let by_step: usize = (0..=200).map(|t| tr.active(t).len()).sum();
+        assert_eq!(by_step, 10);
     }
 
     #[test]

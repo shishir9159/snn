@@ -5,7 +5,7 @@ use crate::input::Input;
 use crate::{Net, Params};
 use snn_core::events::{Events, Saccades};
 use snn_core::readout::{argmax, Readout};
-use snn_core::{Activity, Control, EpochResult, ImageInfo, Pacer, Pass, Recent, Rng};
+use snn_core::{Activity, Control, EpochResult, ImageInfo, Pacer, Pass, Perturb, Recent, Rng};
 use snn_live::app::Printer;
 use std::time::Instant;
 
@@ -68,6 +68,8 @@ pub struct Trainer {
     pub net: Net,
     pub readout: Readout,
     pub saccades: Saccades,
+    /// damage done to test samples, for robustness curves
+    pub perturb: Option<Perturb>,
     rng: Rng,
     events: Events,
     picture: Vec<u8>,
@@ -98,6 +100,7 @@ impl Trainer {
             net,
             readout,
             saccades,
+            perturb: None,
             rng,
             events: Events::new(),
             picture: Vec::new(),
@@ -131,7 +134,22 @@ impl Trainer {
         mon: &mut M,
         ctl: &Control,
     ) -> ImageResult {
-        data.load(i, &self.saccades, &mut self.events, &mut self.picture);
+        let mut noisy = Vec::new();
+        let mut damage = self.perturb.as_mut().filter(|_| !info.learn);
+        let noised = match (&mut damage, data.pixels(i)) {
+            (Some(d), Some(img)) => d.pixels(img, &mut noisy),
+            _ => false,
+        };
+        if noised {
+            let (w, h) = data.picture();
+            self.events.generate(&noisy, w, h, &self.saccades);
+            self.picture = noisy;
+        } else {
+            data.load(i, &self.saccades, &mut self.events, &mut self.picture);
+            if let Some(d) = damage {
+                d.events(&mut self.events);
+            }
+        }
         self.net.reset();
         mon.image_start(&info, &self.picture, &self.net);
         let (mut exc, mut inh) = (0.0, 0.0);

@@ -1,7 +1,7 @@
 use mnist_spncn::tap::Tap;
 use mnist_spncn::train::Trainer;
 use mnist_spncn::Params;
-use snn_core::{weights, Control, Overrides};
+use snn_core::{weights, Control, Dataset, Overrides};
 use snn_live::app::{self, Args, Printer};
 use snn_live::frame::{self, Buf, Meta, Param, Pop, Role};
 use std::path::PathBuf;
@@ -68,6 +68,15 @@ fn save_fields(o: &Opts, t: &Trainer, side: usize) -> Result<(), String> {
     Ok(())
 }
 
+fn robustness(a: &Args, t: &mut Trainer, test: &Dataset) {
+    let ctl = Control::new(0);
+    app::robustness(a, |d| {
+        t.perturb = d;
+        Some(t.evaluate(test, 0, &mut (), &ctl).accuracy())
+    });
+    t.perturb = None;
+}
+
 fn run(a: Args, o: Opts) -> Result<(), String> {
     let (train, test) = app::load_data(&a)?;
     let classes = train.classes.max(test.classes);
@@ -81,6 +90,7 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
         let ctl = Control::new(0);
         let test_set = (!test.is_empty()).then_some(&test);
         trainer.fit(&train, test_set, epochs, &mut { printer }, &ctl);
+        robustness(&a, &mut trainer, &test);
         return save_fields(&o, &trainer, side);
     }
 
@@ -113,10 +123,12 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
     packet.extend(b.take());
 
     let (w, h) = (train.width, train.height);
+    let args = a.clone();
     app::serve_live(&a, packet, move |hub, ctl| {
         let tap = Tap::new(hub, ctl.clone(), w, h);
         let test_set = (!test.is_empty()).then_some(&test);
         trainer.fit(&train, test_set, epochs, &mut (tap, printer), &ctl);
+        robustness(&args, &mut trainer, &test);
         if let Err(e) = save_fields(&o, &trainer, side) {
             eprintln!("error: {e}");
         }

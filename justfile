@@ -44,7 +44,7 @@ snn-live-py:
 mnist-snn-cuda *args: mnist
     uv run --package snn-cuda --extra live python -m snn_cuda --mnist {{data}} {{args}}
 
-# time every Rust model and train each briefly (accuracy, spikes, synops); --save DIR keeps the build, --against DIR compares to one
+# time every Rust model and train each over seeds (accuracy, spikes, energy); --robustness adds damage curves, --save DIR keeps the build, --against DIR compares to one
 bench-all *args: mnist
     uv run --no-project python scripts/bench_all.py --mnist {{data}} {{args}}
 

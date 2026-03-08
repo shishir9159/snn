@@ -4,7 +4,7 @@
 use crate::{frame, server, Hub};
 use snn_core::dataset::{self, Dataset};
 use snn_core::energy::{compact, joules};
-use snn_core::{Control, Costs, EpochResult, ImageInfo, Rng};
+use snn_core::{perturb, Control, Costs, EpochResult, ImageInfo, Perturb, Rng};
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,6 +18,8 @@ pub const USAGE: &str = "  --mnist DIR        MNIST idx files (plain or .gz) in 
   --epochs N         passes over the training set (default 1 headless, 10 live)
   --seed N           random seed (default 1)
   --headless         train without the live view
+  --robustness       after training, test again under pixel noise, dropped
+                     and jittered spikes
   --port N           live view port (default 7878)
   --bind ADDR        live view address (default 127.0.0.1); other than
                      loopback lets the network pause and stop training
@@ -35,6 +37,8 @@ pub struct Args {
     pub epochs: Option<usize>,
     pub seed: u64,
     pub headless: bool,
+    /// test under damaged inputs after training
+    pub robustness: bool,
     pub port: u16,
     pub bind: IpAddr,
     /// steps per second, 0 for unthrottled
@@ -56,6 +60,7 @@ impl Args {
             epochs: None,
             seed: 1,
             headless: false,
+            robustness: false,
             port: 7878,
             bind: Ipv4Addr::LOCALHOST.into(),
             speed: REAL_TIME as u32,
@@ -66,6 +71,10 @@ impl Args {
                 "-h" | "--help" => return Err(String::new()),
                 "--headless" => {
                     a.headless = true;
+                    continue;
+                }
+                "--robustness" => {
+                    a.robustness = true;
                     continue;
                 }
                 _ => {}
@@ -131,6 +140,21 @@ pub fn load_data(a: &Args) -> Result<(Dataset, Dataset), String> {
         train.classes
     );
     Ok((train, test))
+}
+
+/// With `--robustness`, prints test accuracy under each kind and level of
+/// input damage; `eval` runs the test set with one (None for clean) and
+/// returns the accuracy, or None if the input cannot take that damage.
+pub fn robustness<F>(a: &Args, eval: F)
+where
+    F: FnMut(Option<Perturb>) -> Option<f32>,
+{
+    if a.robustness {
+        perturb::sweep(a.seed, eval)
+            .lines()
+            .iter()
+            .for_each(|l| println!("{l}"));
+    }
 }
 
 /// Prints a progress line every tenth of an epoch and a summary per epoch.
@@ -283,7 +307,8 @@ mod tests {
     #[test]
     fn shared_and_model_flags() {
         let a = parse("--headless --train 5 --outputs 12 --speed max").unwrap();
-        assert!(a.headless);
+        assert!(a.headless && !a.robustness);
+        assert!(parse("--robustness --train 5").unwrap().robustness);
         assert_eq!(a.train, Some(5));
         assert_eq!(a.speed, 0);
         assert_eq!(a.epochs(), 1);

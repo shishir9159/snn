@@ -22,6 +22,8 @@ pub trait Input {
     fn steps(&self, saccades: &Saccades) -> usize;
     /// Puts sample `i` into `events` and its picture into `picture`.
     fn load(&self, i: usize, saccades: &Saccades, events: &mut Events, picture: &mut Vec<u8>);
+    /// The image sample `i` is made from, if it is one.
+    fn pixels(&self, i: usize) -> Option<&[u8]>;
     /// Rows for the dashboard's model panel about where the events come from.
     fn source(&self, saccades: &Saccades) -> Vec<Param<'static>>;
 }
@@ -53,6 +55,10 @@ impl Input for Dataset {
 
     fn steps(&self, s: &Saccades) -> usize {
         s.steps()
+    }
+
+    fn pixels(&self, i: usize) -> Option<&[u8]> {
+        Some(self.image(i))
     }
 
     fn load(&self, i: usize, s: &Saccades, events: &mut Events, picture: &mut Vec<u8>) {
@@ -97,6 +103,10 @@ impl Input for Recordings {
 
     fn steps(&self, _: &Saccades) -> usize {
         Recordings::steps(self)
+    }
+
+    fn pixels(&self, _: usize) -> Option<&[u8]> {
+        None
     }
 
     fn load(&self, i: usize, _: &Saccades, events: &mut Events, picture: &mut Vec<u8>) {

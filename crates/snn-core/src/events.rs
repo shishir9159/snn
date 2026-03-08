@@ -153,6 +153,34 @@ impl Events {
         self.ids.extend_from_slice(ids);
     }
 
+    /// Moves or drops every event: `f` maps an event's step to its new one
+    /// (clamped to the recording) or to None to drop it.
+    pub fn retime<F: FnMut(usize) -> Option<usize>>(&mut self, mut f: F) {
+        let steps = self.steps();
+        if steps == 0 {
+            return;
+        }
+        let mut moved: Vec<(usize, u16)> = Vec::with_capacity(self.ids.len());
+        for t in 1..=steps {
+            for &id in self.at(t) {
+                if let Some(n) = f(t) {
+                    moved.push((n.clamp(1, steps), id));
+                }
+            }
+        }
+        moved.sort_by_key(|&(t, _)| t);
+        self.start.clear();
+        self.start.resize(steps + 2, 0);
+        for &(t, _) in &moved {
+            self.start[t + 1] += 1;
+        }
+        for t in 1..self.start.len() {
+            self.start[t] += self.start[t - 1];
+        }
+        self.ids.clear();
+        self.ids.extend(moved.into_iter().map(|(_, id)| id));
+    }
+
     pub fn steps(&self) -> usize {
         self.start.len().saturating_sub(2)
     }
@@ -215,6 +243,26 @@ mod tests {
         assert!((on as f32 - off as f32).abs() < 0.1 * all.len() as f32);
         // events stay near the bar's edges
         assert!(all.iter().all(|&i| (i as usize % n % 34) >= 13));
+    }
+
+    #[test]
+    fn retime_keeps_the_length_and_moves_events() {
+        let mut e = Events::new();
+        e.replace(34, &[0, 0, 2, 2, 3], &[5, 9, 7]);
+        assert_eq!((e.steps(), e.at(1), e.at(3)), (3, &[5, 9][..], &[7][..]));
+        // the first event moves to the end, the second is dropped
+        let mut k = 0;
+        e.retime(|t| {
+            k += 1;
+            match k {
+                1 => Some(t + 10),
+                2 => None,
+                _ => Some(t),
+            }
+        });
+        assert_eq!((e.steps(), e.total()), (3, 2));
+        assert!(e.at(1).is_empty());
+        assert_eq!(e.at(3), &[5, 7]);
     }
 
     #[test]

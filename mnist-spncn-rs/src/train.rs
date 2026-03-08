@@ -5,7 +5,8 @@ use crate::{Net, Params};
 use snn_core::encode::{Coding, EncodeParams};
 use snn_core::readout::{argmax, Readout};
 use snn_core::{
-    Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Recent, Rng, SpikeTrain,
+    Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Perturb, Recent, Rng,
+    SpikeTrain,
 };
 use snn_live::app::Printer;
 use std::time::Instant;
@@ -67,6 +68,8 @@ impl Monitor for Printer {
 pub struct Trainer {
     pub net: Net,
     pub readout: Readout,
+    /// damage done to test images, for robustness curves
+    pub perturb: Option<Perturb>,
     rng: Rng,
     encode: EncodeParams,
     pot: Vec<f32>,
@@ -94,6 +97,7 @@ impl Trainer {
         Self {
             net,
             readout,
+            perturb: None,
             rng,
             encode,
             pot: Vec::new(),
@@ -130,12 +134,21 @@ impl Trainer {
         mon: &mut M,
         ctl: &Control,
     ) -> ImageResult {
-        let img = data.image(i);
+        let mut noisy = Vec::new();
+        let mut img = data.image(i);
+        if let Some(d) = self.perturb.as_mut().filter(|_| !info.learn) {
+            if d.pixels(img, &mut noisy) {
+                img = &noisy;
+            }
+        }
         self.pot.clear();
         self.pot.extend(img.iter().map(|&v| v as f32 / 255.0));
         let steps = self.net.p.steps();
         self.train
             .encode(&self.pot, steps, &self.encode, &mut self.rng);
+        if let Some(d) = self.perturb.as_mut().filter(|_| !info.learn) {
+            d.train(&mut self.train);
+        }
         self.net.reset();
         mon.image_start(&info, img, &self.net);
         let (mut err, mut input) = (0.0, 0.0);

@@ -102,6 +102,15 @@ fn save_outputs(o: &Opts, t: &Trainer, side: usize) -> Result<(), String> {
     Ok(())
 }
 
+fn robustness(a: &Args, t: &mut Trainer, test: &Dataset) {
+    let ctl = Control::new(0);
+    app::robustness(a, |d| {
+        t.perturb = d;
+        Some(t.evaluate(test, 0, &mut (), &ctl).accuracy())
+    });
+    t.perturb = None;
+}
+
 /// Runs the test set through the float layer and the integer path, reports how
 /// they compare and writes test vectors if asked.
 fn integer(o: &Opts, t: &mut Trainer, test: &Dataset) -> Result<(), String> {
@@ -208,6 +217,7 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
         }
         trainer.fit(&train, test_set, epochs, &mut { printer }, &ctl);
         save_outputs(&o, &trainer, train.width)?;
+        robustness(&a, &mut trainer, &test);
         return integer(&o, &mut trainer, &test);
     }
 
@@ -230,10 +240,12 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
     ];
     let packet = app::meta_packet(&meta, "Neuron model · LIF", &model_params(&params), &pops);
     let side = train.width;
+    let args = a.clone();
     app::serve_live(&a, packet, move |hub, ctl| {
         let tap = Tap::new(hub, params.stdp.w_min, params.stdp.w_max);
         let test_set = (!test.is_empty()).then_some(&test);
         trainer.fit(&train, test_set, epochs, &mut (tap, printer), &ctl);
+        robustness(&args, &mut trainer, &test);
         let done = save_outputs(&o, &trainer, side).and_then(|_| integer(&o, &mut trainer, &test));
         if let Err(e) = done {
             eprintln!("error: {e}");
