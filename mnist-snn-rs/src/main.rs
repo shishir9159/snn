@@ -1,21 +1,32 @@
+use mnist_snn::fixed::{self, Fixed};
 use mnist_snn::tap::Tap;
 use mnist_snn::train::Trainer;
 use mnist_snn::{Layer, Params};
+use snn_core::encode::receptive_field;
 use snn_core::weights::{self, Files};
-use snn_core::{Control, Dataset, Overrides, Rng};
+use snn_core::{Control, Dataset, Overrides, Rng, SpikeTrain};
 use snn_live::app::{self, Args, Printer};
 use snn_live::frame::{Meta, Param, Pop, Role};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = "  --outputs N        output neurons (default 40)
-  --weights-png FILE save weight maps as an image";
+  --weights-png FILE save weight maps as an image
+  --int-bits N       after training, also run the test set through the
+                     integer-only path with N-bit weights (default: the
+                     trained weight_bits, else 8)
+  --vectors DIR      write integer test vectors for the first test images";
+
+/// Test images `--vectors` writes, each with a trace of every potential.
+const VECTORS: usize = 100;
 
 #[derive(Debug, Clone)]
 struct Opts {
     outputs: usize,
     files: Files,
     weights_png: Option<PathBuf>,
+    int_bits: Option<u32>,
+    vectors: Option<PathBuf>,
     params: Params,
 }
 
@@ -24,6 +35,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Args, Opts), St
         outputs: 40,
         files: Files::default(),
         weights_png: None,
+        int_bits: None,
+        vectors: None,
         params: Params::default(),
     };
     let mut set = Overrides::default();
@@ -36,6 +49,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Args, Opts), St
                 o.outputs = n.max(1);
             }
             "--weights-png" => o.weights_png = Some(val.into()),
+            "--int-bits" => {
+                let bits = val
+                    .parse()
+                    .ok()
+                    .filter(|b| (1..=fixed::MAX_BITS).contains(b));
+                let bad = || format!("{flag}: {val} is not 1 to {}", fixed::MAX_BITS);
+                o.int_bits = Some(bits.ok_or_else(bad)?);
+            }
+            "--vectors" => o.vectors = Some(val.into()),
             _ => return Ok(o.files.flag(flag, val) || set.flag(flag, val)?),
         }
         Ok(true)
@@ -76,6 +98,58 @@ fn save_outputs(o: &Opts, t: &Trainer, side: usize) -> Result<(), String> {
         let (lo, hi) = (t.params.stdp.w_min, t.params.stdp.w_max);
         weights::save_png(path, l.weights(), side, lo, hi).map_err(|e| e.to_string())?;
         println!("weight maps saved to {}", path.display());
+    }
+    Ok(())
+}
+
+/// Runs the test set through the float layer and the integer path, reports how
+/// they compare and writes test vectors if asked.
+fn integer(o: &Opts, t: &mut Trainer, test: &Dataset) -> Result<(), String> {
+    if o.int_bits.is_none() && o.vectors.is_none() {
+        return Ok(());
+    }
+    if test.is_empty() {
+        return Err("the integer path runs on the test set, which is empty".into());
+    }
+    let p = &t.params;
+    let bits = o
+        .int_bits
+        .unwrap_or(if p.weight_bits > 0 { p.weight_bits } else { 8 })
+        .min(fixed::MAX_BITS);
+    let mut f = Fixed::new(&t.layer, p, bits);
+    let io = |dir: &PathBuf, e: std::io::Error| format!("{}: {e}", dir.display());
+    if let Some(dir) = &o.vectors {
+        f.write_config(dir, p.time_steps).map_err(|e| io(dir, e))?;
+    }
+    let (mut pot, mut train, mut rng) = (Vec::new(), SpikeTrain::new(), Rng::new(0));
+    let (mut hits, mut float_hits, mut same, mut peak) = (0, 0, 0, 0);
+    for i in 0..test.len() {
+        receptive_field(test.image(i), test.width, test.height, &mut pot);
+        train.encode(&pot, p.time_steps, &p.encode, &mut rng);
+        let float = t.layer.present(&train, p, false, &mut ()).winner;
+        let run = match &o.vectors {
+            Some(dir) if i < VECTORS => f
+                .write_image(dir, i, test.label(i), &train)
+                .map_err(|e| io(dir, e))?,
+            _ => f.present(&train, |_, _, _| {}),
+        };
+        let label = Some(test.label(i));
+        hits += (run.winner.and_then(|w| t.labels.of(w)) == label) as usize;
+        float_hits += (float.and_then(|w| t.labels.of(w)) == label) as usize;
+        same += (run.winner == float) as usize;
+        peak = peak.max(run.peak);
+    }
+    let pct = |n: usize| 100.0 * n as f32 / test.len() as f32;
+    println!(
+        "integer path, {bits}-bit weights: test {:.1}% (float {:.1}%), same winner on {:.1}%, potentials need {} bits",
+        pct(hits),
+        pct(float_hits),
+        pct(same),
+        Fixed::register_bits(peak)
+    );
+    if let Some(dir) = &o.vectors {
+        let n = test.len().min(VECTORS);
+        println!("test vectors for {n} images written to {}", dir.display());
     }
     Ok(())
 }
@@ -132,7 +206,8 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
             }
         }
         trainer.fit(&train, test_set, epochs, &mut { printer }, &ctl);
-        return save_outputs(&o, &trainer, train.width);
+        save_outputs(&o, &trainer, train.width)?;
+        return integer(&o, &mut trainer, &test);
     }
 
     let meta = Meta {
@@ -158,7 +233,8 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
         let tap = Tap::new(hub, params.stdp.w_min, params.stdp.w_max);
         let test_set = (!test.is_empty()).then_some(&test);
         trainer.fit(&train, test_set, epochs, &mut (tap, printer), &ctl);
-        if let Err(e) = save_outputs(&o, &trainer, side) {
+        let done = save_outputs(&o, &trainer, side).and_then(|_| integer(&o, &mut trainer, &test));
+        if let Err(e) = done {
             eprintln!("error: {e}");
         }
     })
@@ -283,6 +359,36 @@ mod tests {
         };
         assert_eq!(train(&[]), train(&[]), "same constants, same run");
         assert_ne!(train(&[]), train(&["--set", "sigma=0.02"]));
+    }
+
+    #[test]
+    fn integer_flags_and_report() {
+        let (_, o) = parse(&["--int-bits", "6", "--vectors", "v"]).unwrap();
+        assert_eq!((o.int_bits, o.vectors), (Some(6), Some("v".into())));
+        for bad in ["0", "13", "x"] {
+            assert!(parse(&["--int-bits", bad]).unwrap_err().contains("1 to 12"));
+        }
+        let dir = std::env::temp_dir().join(format!("snn-main-vectors-{}", std::process::id()));
+        let d = dir.to_str().unwrap();
+        let args = [
+            "--headless",
+            "--train",
+            "60",
+            "--test",
+            "3",
+            "--outputs",
+            "5",
+        ];
+        let (a, o) = parse(&[&args[..], &["--vectors", d]].concat()).unwrap();
+        let ran = run(a, o);
+        let files = std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0);
+        std::fs::remove_dir_all(&dir).ok();
+        ran.unwrap();
+        assert_eq!(
+            files,
+            3 + 3 * 3,
+            "config, weights, gains and three files per image"
+        );
     }
 
     #[test]
