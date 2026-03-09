@@ -1,7 +1,9 @@
 //! N-MNIST (Orchard et al. 2015): MNIST digits recorded from a screen by an
 //! event camera that makes three small saccades. Each sample is a `.bin` file of
-//! 5-byte events: x, y, then one polarity bit (1 = ON) and a 23-bit timestamp in
-//! microseconds. The set unpacks to `Train/<digit>/*.bin` and `Test/<digit>/*.bin`.
+//! 5-byte events: x, y, then one polarity bit (1 = ON, as the dataset's readme
+//! has it) and a 23-bit timestamp in microseconds. The set unpacks to
+//! `Train/<digit>/*.bin` and `Test/<digit>/*.bin`; `just nmnist-small` fetches
+//! 1,100 real recordings in that layout, which the tests check the reader on.
 
 use crate::dataset::Dataset;
 use crate::events::{Events, Saccades};
@@ -368,6 +370,93 @@ mod tests {
             }
         }
         fs::remove_dir_all(&root).ok();
+    }
+
+    fn correlation(a: &[f32], b: &[f32]) -> f32 {
+        let n = a.len() as f32;
+        let (ma, mb) = (a.iter().sum::<f32>() / n, b.iter().sum::<f32>() / n);
+        let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
+        for (x, y) in a.iter().zip(b) {
+            ab += (x - ma) * (y - mb);
+            aa += (x - ma) * (x - ma);
+            bb += (y - mb) * (y - mb);
+        }
+        ab / (aa * bb).sqrt().max(1e-9)
+    }
+
+    /// Events per pixel for each 100 ms leg and polarity.
+    fn leg_maps(e: &Events) -> Vec<Vec<f32>> {
+        let mut maps = vec![vec![0.0; SIDE * SIDE]; 6];
+        for t in 1..=e.steps() {
+            let leg = ((t - 1) / 100).min(2);
+            for &id in e.at(t) {
+                let (pol, pix) = (id as usize / (SIDE * SIDE), id as usize % (SIDE * SIDE));
+                maps[leg * 2 + pol][pix] += 1.0;
+            }
+        }
+        maps
+    }
+
+    /// Real recordings, when `just nmnist-small` and `just mnist` fetched them:
+    /// they decode on the 34x34 sensor, their events sit on their MNIST digit,
+    /// and the saccade simulator makes events like theirs from the same digit.
+    #[test]
+    fn real_recordings_match_their_digits_and_the_simulator() {
+        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let train = data.join("nmnist-small/Train");
+        if !train.is_dir() || !data.join("mnist/train-images-idx3-ubyte.gz").is_file() {
+            eprintln!("skipped: needs `just nmnist-small` and `just mnist`");
+            return;
+        }
+        let mnist = crate::dataset::mnist(&data.join("mnist"), true).unwrap();
+        let s = Saccades::default();
+        let (mut placed, mut alike, mut sim) = (Vec::new(), Vec::new(), Events::new());
+        for digit in 0..10u8 {
+            let mut files: Vec<PathBuf> = fs::read_dir(train.join(digit.to_string()))
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            files.sort();
+            for path in files.iter().take(10) {
+                // a sample is named after its MNIST index plus one
+                let id: usize = path.file_stem().unwrap().to_str().unwrap().parse().unwrap();
+                assert_eq!(mnist.label(id - 1), digit, "{}", path.display());
+                let sample = bucket(&fs::read(path).unwrap()).unwrap();
+                let mut real = Events::new();
+                real.replace(SIDE, &sample.start, &sample.ids);
+                assert!(
+                    (290..=330).contains(&real.steps()),
+                    "three saccades of 100 ms"
+                );
+                let mut count = vec![0.0; SIDE * SIDE];
+                let mut image = vec![0.0; SIDE * SIDE];
+                sample
+                    .ids
+                    .iter()
+                    .for_each(|&i| count[i as usize % (SIDE * SIDE)] += 1.0);
+                for (k, &p) in mnist.image(id - 1).iter().enumerate() {
+                    image[(k / 28 + 3) * SIDE + k % 28 + 3] = p as f32;
+                }
+                placed.push(correlation(&count, &image));
+                sim.generate(mnist.image(id - 1), 28, 28, &s);
+                let (r, g) = (leg_maps(&real), leg_maps(&sim));
+                alike.push(
+                    r.iter()
+                        .zip(&g)
+                        .map(|(a, b)| correlation(a, b))
+                        .sum::<f32>()
+                        / 6.0,
+                );
+            }
+        }
+        placed.sort_by(f32::total_cmp);
+        let mean = alike.iter().sum::<f32>() / alike.len() as f32;
+        assert!(
+            placed[placed.len() / 2] > 0.6,
+            "median {}",
+            placed[placed.len() / 2]
+        );
+        assert!(mean > 0.45, "simulated against recorded events: {mean}");
     }
 
     #[test]

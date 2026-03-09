@@ -1,5 +1,7 @@
 data := "data/mnist"
 mirror := "https://storage.googleapis.com/cvdf-datasets/mnist"
+# SLAYER's 1,100-sample slice of N-MNIST, pinned to the commit that added it
+nmnist_small := "https://github.com/bamsumit/slayerPytorch/raw/3626f6a772d5d07171c39ddbeb13b3e23c6c8415/example/02_NMNIST_MLP/NMNISTsmall.zip"
 
 # train on MNIST and serve the live view at http://127.0.0.1:7878
 mnist-snn-rs *args: mnist
@@ -24,6 +26,13 @@ mnist:
         [ -f {{data}}/$f.gz ] || { curl -#fL --retry 3 -o {{data}}/$f.gz.part {{mirror}}/$f.gz && mv {{data}}/$f.gz.part {{data}}/$f.gz; } || exit 1; \
     done
     cd {{data}} && sha256sum --check --quiet "$OLDPWD/mnist.sha256"
+
+# 1,100 real N-MNIST recordings laid out for --nmnist data/nmnist-small
+nmnist-small:
+    mkdir -p data/nmnist-small
+    [ -f data/nmnist-small/NMNISTsmall.zip ] || { curl -#fL --retry 3 -o data/nmnist-small/NMNISTsmall.zip.part {{nmnist_small}} && mv data/nmnist-small/NMNISTsmall.zip.part data/nmnist-small/NMNISTsmall.zip; }
+    cd data/nmnist-small && sha256sum --check --quiet "$OLDPWD/nmnist-small.sha256"
+    uv run --no-project python scripts/nmnist_small.py data/nmnist-small
 
 # format, lint and test the way CI does
 check:
