@@ -88,6 +88,11 @@ pub struct Params {
     pub stdp: StdpParams,
     /// per-image threshold = peak simultaneous input spikes / threshold_div
     pub threshold_div: f32,
+    /// taken off every receptive-field weight; 0.1 makes the kernel sum to
+    /// zero, so only edges drive. Filled shapes need it: on Fashion-MNIST the
+    /// broadest template otherwise wins every image (12.9% test against 54.7%),
+    /// while MNIST digits do better without (71.3% against 57.3%)
+    pub kernel_offset: f32,
     /// depression of the winner's synapses from inputs that never spiked
     pub silent_penalty: f32,
     /// L2 norm every weight row is rescaled to after learning, so a broad template
@@ -150,6 +155,7 @@ impl Default for Params {
             stdp: StdpParams::default(),
             // reference: 3, 0.06; no normalisation
             threshold_div: 1.0,
+            kernel_offset: 0.0,
             silent_penalty: 0.02,
             w_norm: 8.0,
             theta_rate: 0.05,
@@ -164,6 +170,7 @@ impl Default for Params {
 snn_core::tunable!(Params {
     "time_steps" => time_steps,
     "threshold_div" => threshold_div,
+    "kernel_offset" => kernel_offset,
     "silent_penalty" => silent_penalty,
     "w_norm" => w_norm,
     "theta_rate" => theta_rate,

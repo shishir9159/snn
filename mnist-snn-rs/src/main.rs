@@ -2,7 +2,7 @@ use mnist_snn::fixed::{self, Fixed};
 use mnist_snn::tap::Tap;
 use mnist_snn::train::Trainer;
 use mnist_snn::{Layer, Params};
-use snn_core::encode::receptive_field;
+use snn_core::encode::receptive_field_offset;
 use snn_core::weights::{self, Files};
 use snn_core::{Control, Dataset, Exits, Overrides, Rng, SpikeTrain};
 use snn_live::app::{self, Args, Printer};
@@ -138,7 +138,8 @@ fn integer(o: &Opts, t: &mut Trainer, test: &Dataset) -> Result<(), String> {
     let (mut pot, mut train, mut rng) = (Vec::new(), SpikeTrain::new(), Rng::new(0));
     let (mut hits, mut float_hits, mut same, mut peak) = (0, 0, 0, 0);
     for i in 0..test.len() {
-        receptive_field(test.image(i), test.width, test.height, &mut pot);
+        let (img, w, h) = (test.image(i), test.width, test.height);
+        receptive_field_offset(img, w, h, p.kernel_offset, &mut pot);
         train.encode(&pot, p.time_steps, &p.encode, &mut rng);
         let float = t.layer.present(&train, p, false, &mut ()).winner;
         let run = match &o.vectors {

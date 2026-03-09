@@ -146,7 +146,8 @@ fn find(dir: &Path, stems: &[String]) -> io::Result<PathBuf> {
     ))
 }
 
-/// Loads the MNIST training (`train`) or test set from `dir`, plain or gzipped.
+/// Loads the MNIST training (`train`) or test set from `dir`, plain or gzipped;
+/// any set in MNIST's files, such as Fashion-MNIST, is named after `dir`.
 pub fn mnist(dir: &Path, train: bool) -> io::Result<Dataset> {
     let set = if train { "train" } else { "t10k" };
     let names = |kind: &str, idx: &str| {
@@ -161,8 +162,11 @@ pub fn mnist(dir: &Path, train: bool) -> io::Result<Dataset> {
     if labels.len() * rows * cols != pixels.len() {
         return Err(invalid("mnist image and label counts differ"));
     }
+    let name = dir
+        .file_name()
+        .map_or("mnist".into(), |n| n.to_string_lossy());
     Ok(Dataset::new(
-        &format!("mnist/{set}"),
+        &format!("{name}/{set}"),
         cols,
         rows,
         pixels,
@@ -396,6 +400,7 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
         let ds = ds.unwrap();
         assert_eq!((ds.len(), ds.width, ds.height, ds.classes), (3, 2, 2, 10));
+        assert!(ds.name.starts_with("snn-mnist-") && ds.name.ends_with("/t10k"));
         assert_eq!(ds.image(1), &[4, 5, 6, 7]);
         assert_eq!(ds.label(2), 9);
         assert!(missing.is_err());

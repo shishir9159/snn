@@ -2,7 +2,7 @@
 
 use crate::layer::{Layer, Observer, Outcome, Reward, Step};
 use crate::params::{Params, Rule};
-use snn_core::encode::{receptive_field, SpikeTrain};
+use snn_core::encode::{receptive_field_offset, SpikeTrain};
 use snn_core::exit::{checkpoint, Partial};
 use snn_core::{
     Activity, Control, Dataset, EpochResult, Exits, ImageInfo, Pacer, Pass, Perturb, Recent, Rng,
@@ -216,8 +216,8 @@ impl Trainer {
                 img = &noisy;
             }
         }
-        receptive_field(img, data.width, data.height, &mut self.pot);
         let p = &self.params;
+        receptive_field_offset(img, data.width, data.height, p.kernel_offset, &mut self.pot);
         self.train
             .encode(&self.pot, p.time_steps, &p.encode, &mut self.rng);
         if let Some(d) = self.perturb.as_mut().filter(|_| !info.learn) {

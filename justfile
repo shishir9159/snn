@@ -1,5 +1,6 @@
 data := "data/mnist"
 mirror := "https://storage.googleapis.com/cvdf-datasets/mnist"
+fashion := "http://fashion-mnist.s3-website.eu-central-1.amazonaws.com"
 # SLAYER's 1,100-sample slice of N-MNIST, pinned to the commit that added it
 nmnist_small := "https://github.com/bamsumit/slayerPytorch/raw/3626f6a772d5d07171c39ddbeb13b3e23c6c8415/example/02_NMNIST_MLP/NMNISTsmall.zip"
 
@@ -20,12 +21,17 @@ mnist-pcl-rs *args: mnist
     cargo run --release -p mnist-pcl-rs -- --mnist {{data}} {{args}}
 
 # fetch the MNIST idx files, skipping ones already present, and check their sums
-mnist:
-    mkdir -p {{data}}
+mnist: (_idx data mirror "mnist.sha256")
+
+# Zalando's Fashion-MNIST in the same files; train on it with --mnist data/fashion-mnist
+fashion-mnist: (_idx "data/fashion-mnist" fashion "fashion-mnist.sha256")
+
+_idx dir url sums:
+    mkdir -p {{dir}}
     for f in train-images-idx3-ubyte train-labels-idx1-ubyte t10k-images-idx3-ubyte t10k-labels-idx1-ubyte; do \
-        [ -f {{data}}/$f.gz ] || { curl -#fL --retry 3 -o {{data}}/$f.gz.part {{mirror}}/$f.gz && mv {{data}}/$f.gz.part {{data}}/$f.gz; } || exit 1; \
+        [ -f {{dir}}/$f.gz ] || { curl -#fL --retry 3 -o {{dir}}/$f.gz.part {{url}}/$f.gz && mv {{dir}}/$f.gz.part {{dir}}/$f.gz; } || exit 1; \
     done
-    cd {{data}} && sha256sum --check --quiet "$OLDPWD/mnist.sha256"
+    cd {{dir}} && sha256sum --check --quiet "$OLDPWD/{{sums}}"
 
 # 1,100 real N-MNIST recordings laid out for --nmnist data/nmnist-small
 nmnist-small:

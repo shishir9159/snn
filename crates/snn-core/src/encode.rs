@@ -48,6 +48,18 @@ pub const KERNEL: [[f32; 5]; 5] = [
 
 /// Convolves a row-major grayscale image with [`KERNEL`], zero padded, pixels scaled to [0, 1].
 pub fn receptive_field(pixels: &[u8], width: usize, height: usize, out: &mut Vec<f32>) {
+    receptive_field_offset(pixels, width, height, 0.0, out);
+}
+
+/// As [`receptive_field`] with `offset` taken off every kernel weight. At 0.1
+/// the kernel sums to zero: flat areas stay silent and only edges drive.
+pub fn receptive_field_offset(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    offset: f32,
+    out: &mut Vec<f32>,
+) {
     assert_eq!(pixels.len(), width * height);
     out.clear();
     out.resize(width * height, 0.0);
@@ -65,7 +77,7 @@ pub fn receptive_field(pixels: &[u8], width: usize, height: usize, out: &mut Vec
             for (kx, &k) in row.iter().enumerate() {
                 let ox = (x + 2).wrapping_sub(kx);
                 if ox < width {
-                    out[oy * width + ox] += k * v;
+                    out[oy * width + ox] += (k - offset) * v;
                 }
             }
         }
@@ -294,6 +306,18 @@ mod tests {
                 assert!((out[y * 20 + x] - sum).abs() < 1e-5);
             }
         }
+    }
+
+    #[test]
+    fn a_zero_sum_kernel_leaves_flat_areas_silent() {
+        let flat = [200u8; 15 * 15];
+        let (mut plain, mut edges) = (Vec::new(), Vec::new());
+        receptive_field(&flat, 15, 15, &mut plain);
+        receptive_field_offset(&flat, 15, 15, 0.1, &mut edges);
+        let centre = 7 * 15 + 7;
+        assert!((plain[centre] - 2.5 * 200.0 / 255.0).abs() < 1e-5);
+        assert!(edges[centre].abs() < 1e-5, "{}", edges[centre]);
+        assert!(edges[0] > 0.0, "the image border is an edge");
     }
 
     #[test]
