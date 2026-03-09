@@ -4,8 +4,11 @@
 use crate::input::Input;
 use crate::{Net, Params};
 use snn_core::events::{Events, Saccades};
+use snn_core::exit::{checkpoint, Partial, POINTS, SURE};
 use snn_core::readout::{argmax, Readout};
-use snn_core::{Activity, Control, EpochResult, ImageInfo, Pacer, Pass, Perturb, Recent, Rng};
+use snn_core::{
+    Activity, Control, EpochResult, Exits, ImageInfo, Pacer, Pass, Perturb, Recent, Rng,
+};
 use snn_live::app::Printer;
 use std::time::Instant;
 
@@ -70,6 +73,8 @@ pub struct Trainer {
     pub saccades: Saccades,
     /// damage done to test samples, for robustness curves
     pub perturb: Option<Perturb>,
+    /// totals of answers cut short, gathered while testing
+    pub exits: Option<Exits>,
     rng: Rng,
     events: Events,
     picture: Vec<u8>,
@@ -101,6 +106,7 @@ impl Trainer {
             readout,
             saccades,
             perturb: None,
+            exits: None,
             rng,
             events: Events::new(),
             picture: Vec::new(),
@@ -154,10 +160,29 @@ impl Trainer {
         mon.image_start(&info, &self.picture, &self.net);
         let (mut exc, mut inh) = (0.0, 0.0);
         let mut events = 0u64;
-        for t in 1..=self.events.steps() {
+        let steps = self.events.steps();
+        let tracking = self.exits.is_some() && !info.learn;
+        let (mut at, mut next, mut spent) = ([Partial::default(); POINTS], 0, 0u64);
+        for t in 1..=steps {
             let ev = self.events.at(t);
             events += ev.len() as u64;
             self.net.step(t as u32, ev, info.learn);
+            if tracking {
+                let fired = self.net.fired_s.len() + self.net.fired_c.len();
+                spent += (ev.len() + fired) as u64;
+                // the readout of the counts so far
+                while next < POINTS && checkpoint(next, steps) == t {
+                    self.net.code(&mut self.code);
+                    self.readout.probs(&self.code, &mut self.probs);
+                    let top = self.probs.iter().copied().fold(0.0, f32::max);
+                    at[next] = Partial {
+                        answer: argmax(&self.probs),
+                        spikes: spent,
+                        sure: top >= SURE,
+                    };
+                    next += 1;
+                }
+            }
             exc += self.net.excitation;
             inh += self.net.inhibition;
             mon.step(t, &self.net, ev);
@@ -173,6 +198,9 @@ impl Trainer {
         self.readout.probs(&self.code, &mut self.probs);
         let predicted = argmax(&self.probs);
         let correct = predicted == Some(info.label);
+        if let Some(e) = self.exits.as_mut().filter(|_| tracking && steps > 0) {
+            e.record(info.label, &at);
+        }
         if info.learn {
             self.readout.learn(&self.code, &self.probs, info.label);
             self.recent.push(correct);

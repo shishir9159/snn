@@ -105,6 +105,28 @@ def test_robustness_curves_average_seeds_and_start_clean(tmp_path):
     assert svg.count("<polyline") == 2 and "wta · event dropout 0.7: 68.5% ± 1.4" in svg
 
 
+EXIT = """early exit: steps 10.0% 20.0% 30.0% 40.0% 50.0% 60.0% 70.0% 80.0% 90.0% 100.0%
+early exit: accuracy 0.0% 35.4% 67.6% 67.8% 67.8% 67.8% 67.8% 67.8% 67.8% 67.8%
+early exit: spikes 0.0% 12.1% 23.3% 32.5% 46.6% 58.3% 65.8% 79.0% 92.2% 100.0%
+early exit: sure 67.8% at 25.1% of the steps and 18.9% of the spikes
+"""
+
+
+def test_early_exit_lines_become_figures_and_a_chart(tmp_path):
+    f = b.parse_early_exit(EXIT)
+    assert (f["exit acc 2"], f["exit spikes 10"], f["exit acc 10"]) == (35.4, 100.0, 67.8)
+    assert (f["exit sure acc"], f["exit sure steps"], f["exit sure spikes"]) == (67.8, 25.1, 18.9)
+    assert len(f) == 23 and b.parse_early_exit(ROBUST) == {}
+    curves = b.early_exit_curves([("wta", 1, [f, f]), ("pcl", 1, [{"test %": 1.0}])])
+    points, sure = curves["wta"]
+    assert list(curves) == ["wta"] and points[2] == (23.3, 67.6) and sure == (67.8, 25.1, 18.9)
+    chart = tmp_path / "e.svg"
+    b.early_exit_svg(curves, chart)
+    svg = chart.read_text(encoding="utf-8")
+    assert "sure exit at 25% of the steps: 67.8% with 19% of the spikes" in svg
+    assert svg.count("<polyline") == 1 and svg.count("rotate(45") == 1
+
+
 def test_an_unknown_model_name_is_refused():
     with pytest.raises(SystemExit):
         b.main(["--only", "nope"])

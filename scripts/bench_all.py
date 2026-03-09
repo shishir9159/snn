@@ -6,7 +6,8 @@ Builds the profile examples and model binaries, then
     operations and energy per image, once per seed, since accuracy after a
     few thousand images moves by several points from seed to seed.
 `--robustness` also tests each trained model under pixel noise, dropped and
-jittered spikes and draws the curves. `--save DIR` keeps the built executables;
+jittered spikes, and `--early-exit` measures accuracy against the spikes spent
+when answers are cut short; both draw their curves. `--save DIR` keeps the built executables;
 later `--against DIR` runs them and the fresh build interleaved in one session,
 so CPU frequency drift hits both alike. Results also go to bench-results/ (not
 tracked) for comparing runs.
@@ -44,6 +45,7 @@ EPOCH = re.compile(
 
 ROBUST = re.compile(r"^robustness: (.+?) ((?:[\d.]+ [\d.]+%\s*)+)$", re.M)
 CLEAN = re.compile(r"^robustness: clean ([\d.]+)%", re.M)
+SURE = re.compile(r"^early exit: sure ([\d.]+)% at ([\d.]+)% of the steps and ([\d.]+)% of the spikes", re.M)
 
 
 def expand(count):
@@ -80,6 +82,21 @@ def parse_epoch(text):
         "nJ/img": nanojoules(energy) if energy else 0.0,
         "dense nJ": nanojoules(dense) if dense else 0.0,
     }
+
+
+def parse_early_exit(text):
+    """{'exit acc 1'..'exit acc 10', 'exit spikes 1'.., 'exit sure acc/steps/spikes': %}."""
+    out = {}
+    for what in ("accuracy", "spikes"):
+        m = re.search(rf"^early exit: {what} ((?:[\d.]+% ?)+)$", text, re.M)
+        if m:
+            key = "acc" if what == "accuracy" else what
+            for k, v in enumerate(re.findall(r"([\d.]+)%", m.group(1)), 1):
+                out[f"exit {key} {k}"] = float(v)
+    m = SURE.search(text)
+    if m:
+        out.update(zip(("exit sure acc", "exit sure steps", "exit sure spikes"), map(float, m.groups())))
+    return out
 
 
 def parse_robustness(text):
@@ -137,7 +154,7 @@ def timings(models, mnist, rounds, against):
     return rows
 
 
-def quality(models, mnist, train, test, seeds, jobs, epochs=None, robust=False):
+def quality(models, mnist, train, test, seeds, jobs, epochs=None, robust=False, exits=False):
     """(model, epochs, last epoch's figures per seed) per model. The runs go in
     parallel: they measure learning, the phases measure speed."""
     runs = []
@@ -146,12 +163,13 @@ def quality(models, mnist, train, test, seeds, jobs, epochs=None, robust=False):
         n = epochs or own
         cmd = [exe, "--headless", "--mnist", mnist, "--train", str(train), "--test", str(test)]
         cmd += ["--robustness"] if robust else []
+        cmd += ["--early-exit"] if exits else []
         runs += [(name, n, [*cmd, "--epochs", str(n), "--seed", str(s)]) for s in seeds]
 
     def go(r):
         text = run(r[2])
         f = parse_epoch(text)
-        return f and {**f, **parse_robustness(text)}
+        return f and {**f, **parse_robustness(text), **parse_early_exit(text)}
 
     with ThreadPoolExecutor(jobs) as pool:
         figures = list(pool.map(go, runs))
@@ -205,16 +223,17 @@ AXES = {"pixel noise": "noise σ, share of full brightness", "event dropout": "s
         "timing jitter": "jitter σ, ms"}
 
 
-def robustness_svg(curves, path):
-    """Small multiples, one panel per kind of damage, a line per model."""
-    kinds = list(dict.fromkeys(k for c in curves.values() for k in c))
-    models = list(curves)[: len(SERIES)]
-    pw, ph, gap, left, top, bottom = 280, 200, 36, 40, 112, 48
-    width = left + len(kinds) * (pw + gap)
+def lines_svg(title, note, panels, path):
+    """Line charts side by side, sharing a 0-100% y axis and a legend. A panel is
+    (name, x axis label, [(x 0-1, tick label)], {series: [(x 0-1, y %, tooltip)]},
+    {series: [(x, y, tooltip)]} drawn as diamonds)."""
+    models = list(dict.fromkeys(m for panel in panels for m in panel[3]))[: len(SERIES)]
+    pw, ph, gap, left, top, bottom = 280 if len(panels) > 1 else 520, 200, 36, 40, 112, 48
+    width = left + len(panels) * (pw + gap)
     height = top + ph + bottom
     var = lambda mode: "".join(f"--s{i}:{c[mode]};" for i, c in enumerate(SERIES))  # noqa: E731
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-           f'viewBox="0 0 {width} {height}" role="img" aria-label="Test accuracy under input damage">',
+           f'viewBox="0 0 {width} {height}" role="img" aria-label="{title}">',
            "<style>",
            f"svg{{--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;{var(0)}}}",
            "@media (prefers-color-scheme: dark){svg{--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;"
@@ -226,39 +245,91 @@ def robustness_svg(curves, path):
            ".d{stroke:var(--surface);stroke-width:2}.h{fill:transparent}",
            "</style>",
            f'<rect width="{width}" height="{height}" fill="var(--surface)"/>',
-           '<text class="t" x="16" y="24">Test accuracy under input damage</text>',
-           '<text class="m" x="16" y="42">mean over seeds; hover a point for its spread</text>']
+           f'<text class="t" x="16" y="24">{title}</text>',
+           f'<text class="m" x="16" y="42">{note}</text>']
     x = 16
     for i, name in enumerate(models):
         out.append(f'<line x1="{x}" y1="64" x2="{x + 18}" y2="64" class="l" stroke="var(--s{i})"/>')
         out.append(f'<text x="{x + 24}" y="68">{name}</text>')
         x += 24 + 8 * len(name) + 24
-    for k, kind in enumerate(kinds):
+    y = lambda acc: top + ph * (1 - acc / 100)  # noqa: E731
+
+    def point(i, px, py, tip, r=4, diamond=False):
+        mark = (f'<rect class="d" fill="var(--s{i})" x="{px - r:.1f}" y="{py - r:.1f}" width="{2 * r}" '
+                f'height="{2 * r}" transform="rotate(45 {px:.1f} {py:.1f})"/>' if diamond else
+                f'<circle class="d" fill="var(--s{i})" cx="{px:.1f}" cy="{py:.1f}" r="{r}"/>')
+        return f'<g><title>{tip}</title><circle class="h" cx="{px:.1f}" cy="{py:.1f}" r="10"/>{mark}</g>'
+
+    for k, (name, axis, ticks, series, marks) in enumerate(panels):
         x0 = left + k * (pw + gap)
-        levels = next(c[kind] for c in curves.values() if kind in c)
-        xs = {lv: x0 + j * pw / max(1, len(levels) - 1) for j, (lv, _, _) in enumerate(levels)}
-        y = lambda acc: top + ph * (1 - acc / 100)  # noqa: E731
-        out.append(f'<text class="t" x="{x0}" y="{top - 14}">{kind}</text>')
+        px = lambda f: x0 + f * pw  # noqa: E731
+        out.append(f'<text class="t" x="{x0}" y="{top - 14}">{name}</text>')
         for a in (0, 25, 50, 75, 100):
-            cls = "b" if a == 0 else "g"
-            out.append(f'<line class="{cls}" x1="{x0}" x2="{x0 + pw}" y1="{y(a)}" y2="{y(a)}"/>')
+            out.append(f'<line class="{"b" if a == 0 else "g"}" x1="{x0}" x2="{x0 + pw}" y1="{y(a)}" y2="{y(a)}"/>')
             out.append(f'<text class="m" x="{x0 - 6}" y="{y(a) + 4}" text-anchor="end">{a}%</text>')
-        for lv, px in xs.items():
-            out.append(f'<text class="m" x="{px}" y="{top + ph + 18}" text-anchor="middle">{lv:g}</text>')
-        out.append(f'<text class="m" x="{x0 + pw / 2}" y="{top + ph + 38}" text-anchor="middle">{AXES.get(kind, kind)}</text>')
-        for i, name in enumerate(models):
-            pts = curves[name].get(kind)
-            if not pts:
-                continue
-            line = " ".join(f"{xs[lv]:.1f},{y(m):.1f}" for lv, m, _ in pts)
-            out.append(f'<polyline class="l" stroke="var(--s{i})" points="{line}"/>')
-            for lv, m, sd in pts:
-                spread = f" ± {sd:.1f}" if sd is not None else ""
-                out.append(f'<g><title>{name} · {kind} {lv:g}: {m:.1f}%{spread}</title>'
-                           f'<circle class="h" cx="{xs[lv]:.1f}" cy="{y(m):.1f}" r="10"/>'
-                           f'<circle class="d" fill="var(--s{i})" cx="{xs[lv]:.1f}" cy="{y(m):.1f}" r="4"/></g>')
+        for f, label in ticks:
+            out.append(f'<text class="m" x="{px(f):.1f}" y="{top + ph + 18}" text-anchor="middle">{label}</text>')
+        out.append(f'<text class="m" x="{x0 + pw / 2}" y="{top + ph + 38}" text-anchor="middle">{axis}</text>')
+        for i, model in enumerate(models):
+            pts = series.get(model)
+            if pts:
+                line = " ".join(f"{px(f):.1f},{y(v):.1f}" for f, v, _ in pts)
+                out.append(f'<polyline class="l" stroke="var(--s{i})" points="{line}"/>')
+                out += [point(i, px(f), y(v), tip) for f, v, tip in pts]
+            out += [point(i, px(f), y(v), tip, 5, True) for f, v, tip in marks.get(model, [])]
     out.append("</svg>")
     path.write_text("\n".join(out), encoding="utf-8")
+
+
+def robustness_svg(curves, path):
+    """Small multiples, one panel per kind of damage, a line per model."""
+    panels = []
+    for kind in dict.fromkeys(k for c in curves.values() for k in c):
+        levels = [lv for lv, _, _ in next(c[kind] for c in curves.values() if kind in c)]
+        at = {lv: j / max(1, len(levels) - 1) for j, lv in enumerate(levels)}
+        series = {}
+        for model, c in curves.items():
+            spread = lambda sd: f" ± {sd:.1f}" if sd is not None else ""  # noqa: E731
+            series[model] = [(at[lv], m, f"{model} · {kind} {lv:g}: {m:.1f}%{spread(sd)}")
+                             for lv, m, sd in c.get(kind, [])]
+        ticks = [(f, f"{lv:g}") for lv, f in at.items()]
+        panels.append((kind, AXES.get(kind, kind), ticks, series, {}))
+    lines_svg("Test accuracy under input damage", "mean over seeds; hover a point for its spread", panels, path)
+
+
+def early_exit_curves(quality_rows):
+    """{model: ([(spikes %, accuracy %)] per checkpoint, (sure accuracy, steps %, spikes %))}."""
+    out = {}
+    for name, _, figures in quality_rows:
+        s = summary(figures)
+        if "exit sure acc" not in s:
+            continue
+        points = [(s[f"exit spikes {k}"][0], s[f"exit acc {k}"][0]) for k in range(1, 11)]
+        out[name] = (points, tuple(s[f"exit sure {k}"][0] for k in ("acc", "steps", "spikes")))
+    return out
+
+
+def report_early_exit(curves):
+    print("\nearly exit: accuracy % and spikes spent % at each tenth of a test presentation, mean over seeds")
+    print(f"  {'steps %':<16}" + "".join(f"{10 * k:>7}" for k in range(1, 11)) + "   sure exit")
+    for name, (points, (acc, steps, spikes)) in curves.items():
+        print(f"  {name + ' acc':<16}" + "".join(f"{a:>7.1f}" for _, a in points)
+              + f"   {acc:.1f} at {steps:.0f}% of steps")
+        print(f"  {'  spikes':<16}" + "".join(f"{sp:>7.1f}" for sp, _ in points)
+              + f"   {spikes:.0f}% of spikes")
+
+
+def early_exit_svg(curves, path):
+    series, marks = {}, {}
+    for name, (points, (acc, steps, spikes)) in curves.items():
+        series[name] = [(sp / 100, a, f"{name} · {10 * k}% of the steps: {a:.1f}% with {sp:.0f}% of the spikes")
+                        for k, (sp, a) in enumerate(points, 1)]
+        marks[name] = [(spikes / 100, acc, f"{name} · sure exit at {steps:.0f}% of the steps: "
+                                           f"{acc:.1f}% with {spikes:.0f}% of the spikes")]
+    ticks = [(f / 100, f"{f}%") for f in (0, 25, 50, 75, 100)]
+    panel = ("accuracy against spikes spent", "share of the full presentation's spikes", ticks, series, marks)
+    lines_svg("Answering early", "a point per tenth of the steps, ◆ where the model is sure; mean over seeds",
+              [panel], path)
 
 
 def git(*args):
@@ -327,6 +398,8 @@ def main(argv=None):
                    help="quality runs at once (default: half the CPUs)")
     a.add_argument("--robustness", action="store_true",
                    help="also test under input damage and draw the curves")
+    a.add_argument("--early-exit", action="store_true",
+                   help="also measure answers cut short and draw accuracy against spikes")
     a.add_argument("--only", help="comma separated models: " + ", ".join(m[0] for m in MODELS))
     a.add_argument("--save", metavar="DIR", help="copy the built profile examples to DIR and stop")
     a.add_argument("--against", metavar="DIR", help="also time the examples saved in DIR, interleaved")
@@ -352,7 +425,8 @@ def main(argv=None):
     mnist = str(Path(a.mnist))
     time_rows = timings(models, mnist, a.rounds, a.against)
     seeds = list(range(1, max(1, a.seeds) + 1))
-    quality_rows = quality(models, mnist, a.train, a.test, seeds, a.jobs, a.epochs, a.robustness)
+    quality_rows = quality(models, mnist, a.train, a.test, seeds, a.jobs, a.epochs, a.robustness,
+                           a.early_exit)
     report(time_rows, quality_rows, a.rounds, a.train, a.test, seeds)
     path = save_csv(time_rows, quality_rows, seeds)
     print(f"\nwritten to {path.relative_to(ROOT)}")
@@ -361,6 +435,12 @@ def main(argv=None):
         report_robustness(curves)
         chart = path.with_name(path.stem + "-robustness.svg")
         robustness_svg(curves, chart)
+        print(f"curves drawn in {chart.relative_to(ROOT)}")
+    if a.early_exit:
+        curves = early_exit_curves(quality_rows)
+        report_early_exit(curves)
+        chart = path.with_name(path.stem + "-early-exit.svg")
+        early_exit_svg(curves, chart)
         print(f"curves drawn in {chart.relative_to(ROOT)}")
 
 

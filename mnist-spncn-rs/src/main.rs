@@ -1,7 +1,7 @@
 use mnist_spncn::tap::Tap;
 use mnist_spncn::train::Trainer;
 use mnist_spncn::Params;
-use snn_core::{weights, Control, Dataset, Overrides};
+use snn_core::{weights, Control, Dataset, Exits, Overrides};
 use snn_live::app::{self, Args, Printer};
 use snn_live::frame::{self, Buf, Meta, Param, Pop, Role};
 use std::path::PathBuf;
@@ -75,6 +75,11 @@ fn robustness(a: &Args, t: &mut Trainer, test: &Dataset) {
         Some(t.evaluate(test, 0, &mut (), &ctl).accuracy())
     });
     t.perturb = None;
+    app::early_exit(a, || {
+        t.exits = Some(Exits::default());
+        t.evaluate(test, 0, &mut (), &ctl);
+        t.exits.take().unwrap_or_default()
+    });
 }
 
 fn run(a: Args, o: Opts) -> Result<(), String> {

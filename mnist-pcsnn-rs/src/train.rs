@@ -2,8 +2,9 @@
 //! by step for monitors, then infers and learns from the label.
 
 use crate::{Net, Params};
+use snn_core::exit::{checkpoint, Partial};
 use snn_core::{
-    Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Perturb, Recent, Rng,
+    Activity, Control, Dataset, EpochResult, Exits, ImageInfo, Pacer, Pass, Perturb, Recent, Rng,
 };
 use snn_live::app::Printer;
 use std::time::Instant;
@@ -119,6 +120,8 @@ pub struct Trainer {
     pub net: Net,
     /// damage done to test images, for robustness curves
     pub perturb: Option<Perturb>,
+    /// totals of answers cut short, gathered while testing
+    pub exits: Option<Exits>,
     rng: Rng,
     sched: [Schedule; 3],
     recent: Recent,
@@ -131,6 +134,7 @@ impl Trainer {
         Self {
             net: Net::new(n_in, classes, p, &mut rng),
             perturb: None,
+            exits: None,
             rng,
             sched: Default::default(),
             recent: Recent::new(RECENT),
@@ -189,6 +193,22 @@ impl Trainer {
         }
 
         let correct = predicted == Some(info.label);
+        if let Some(e) = self.exits.as_mut().filter(|_| !info.learn) {
+            // the first output spike answers; step t replays time t - 1
+            let first = net.out_fwd.iter().copied().fold(net.p.t_max, f32::min);
+            let by = |times: &[f32], end: f32| times.iter().filter(|&&s| s <= end).count() as u64;
+            let at = std::array::from_fn(|k| {
+                let end = (checkpoint(k, steps) - 1) as f32;
+                let sure = predicted.is_some() && first <= end;
+                let spikes = by(&net.t_in, end) + by(&net.hid_pred, end) + by(&net.out_fwd, end);
+                Partial {
+                    answer: predicted.filter(|_| sure),
+                    spikes,
+                    sure,
+                }
+            });
+            e.record(info.label, &at);
+        }
         if info.learn {
             net.infer(info.label);
             mon.inferred(net);

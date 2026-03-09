@@ -3,9 +3,10 @@
 
 use crate::{Net, Params};
 use snn_core::encode::{Coding, EncodeParams};
+use snn_core::exit::{checkpoint, Partial, POINTS, SURE};
 use snn_core::readout::{argmax, Readout};
 use snn_core::{
-    Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Perturb, Recent, Rng,
+    Activity, Control, Dataset, EpochResult, Exits, ImageInfo, Pacer, Pass, Perturb, Recent, Rng,
     SpikeTrain,
 };
 use snn_live::app::Printer;
@@ -70,6 +71,8 @@ pub struct Trainer {
     pub readout: Readout,
     /// damage done to test images, for robustness curves
     pub perturb: Option<Perturb>,
+    /// totals of answers cut short, gathered while testing
+    pub exits: Option<Exits>,
     rng: Rng,
     encode: EncodeParams,
     pot: Vec<f32>,
@@ -98,6 +101,7 @@ impl Trainer {
             net,
             readout,
             perturb: None,
+            exits: None,
             rng,
             encode,
             pot: Vec::new(),
@@ -153,9 +157,27 @@ impl Trainer {
         mon.image_start(&info, img, &self.net);
         let (mut err, mut input) = (0.0, 0.0);
         let mut inputs = 0u64;
+        let tracking = self.exits.is_some() && !info.learn;
+        let (mut at, mut next, mut spent) = ([Partial::default(); POINTS], 0, 0u64);
         for t in 1..=steps {
             self.net.step(t, &self.train, info.learn);
             inputs += self.net.input.len() as u64;
+            if tracking {
+                let latent: usize = self.net.lat.iter().map(|l| l.spikes.len()).sum();
+                spent += (self.net.input.len() + latent) as u64;
+                // the readout of the counts so far
+                while next < POINTS && checkpoint(next, steps) == t {
+                    self.net.code(&mut self.code);
+                    self.readout.probs(&self.code, &mut self.probs);
+                    let top = self.probs.iter().copied().fold(0.0, f32::max);
+                    at[next] = Partial {
+                        answer: argmax(&self.probs),
+                        spikes: spent,
+                        sure: top >= SURE,
+                    };
+                    next += 1;
+                }
+            }
             err += self.net.energy[0];
             input += self.net.input_energy;
             mon.step(t, &self.net);
@@ -174,6 +196,9 @@ impl Trainer {
         self.readout.probs(&self.code, &mut self.probs);
         let predicted = argmax(&self.probs);
         let correct = predicted == Some(info.label);
+        if let Some(e) = self.exits.as_mut().filter(|_| tracking) {
+            e.record(info.label, &at);
+        }
         if info.learn {
             self.readout.learn(&self.code, &self.probs, info.label);
             self.recent.push(correct);

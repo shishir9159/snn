@@ -4,7 +4,7 @@
 use crate::{frame, server, Hub};
 use snn_core::dataset::{self, Dataset};
 use snn_core::energy::{compact, joules};
-use snn_core::{perturb, Control, Costs, EpochResult, ImageInfo, Perturb, Rng};
+use snn_core::{perturb, Control, Costs, EpochResult, Exits, ImageInfo, Perturb, Rng};
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,6 +20,8 @@ pub const USAGE: &str = "  --mnist DIR        MNIST idx files (plain or .gz) in 
   --headless         train without the live view
   --robustness       after training, test again under pixel noise, dropped
                      and jittered spikes
+  --early-exit       after training, report accuracy and spikes spent at each
+                     tenth of a test presentation
   --port N           live view port (default 7878)
   --bind ADDR        live view address (default 127.0.0.1); other than
                      loopback lets the network pause and stop training
@@ -39,6 +41,8 @@ pub struct Args {
     pub headless: bool,
     /// test under damaged inputs after training
     pub robustness: bool,
+    /// measure answers cut short after training
+    pub early_exit: bool,
     pub port: u16,
     pub bind: IpAddr,
     /// steps per second, 0 for unthrottled
@@ -61,6 +65,7 @@ impl Args {
             seed: 1,
             headless: false,
             robustness: false,
+            early_exit: false,
             port: 7878,
             bind: Ipv4Addr::LOCALHOST.into(),
             speed: REAL_TIME as u32,
@@ -75,6 +80,10 @@ impl Args {
                 }
                 "--robustness" => {
                     a.robustness = true;
+                    continue;
+                }
+                "--early-exit" => {
+                    a.early_exit = true;
                     continue;
                 }
                 _ => {}
@@ -154,6 +163,14 @@ where
             .lines()
             .iter()
             .for_each(|l| println!("{l}"));
+    }
+}
+
+/// With `--early-exit`, prints accuracy and spikes spent at each checkpoint
+/// of a test presentation; `eval` runs the test set and returns the totals.
+pub fn early_exit<F: FnOnce() -> Exits>(a: &Args, eval: F) {
+    if a.early_exit {
+        eval().lines().iter().for_each(|l| println!("{l}"));
     }
 }
 
@@ -309,6 +326,7 @@ mod tests {
         let a = parse("--headless --train 5 --outputs 12 --speed max").unwrap();
         assert!(a.headless && !a.robustness);
         assert!(parse("--robustness --train 5").unwrap().robustness);
+        assert!(parse("--early-exit").unwrap().early_exit);
         assert_eq!(a.train, Some(5));
         assert_eq!(a.speed, 0);
         assert_eq!(a.epochs(), 1);

@@ -5,7 +5,7 @@ use mnist_pcl::Params;
 use snn_core::events::Saccades;
 use snn_core::nmnist::Recordings;
 use snn_core::perturb::Kind;
-use snn_core::{Control, Overrides};
+use snn_core::{Control, Exits, Overrides};
 use snn_live::app::{self, Args, Printer};
 use snn_live::frame::{self, Buf, Meta, Param, Pop, Role};
 use std::path::PathBuf;
@@ -102,6 +102,11 @@ fn robustness<D: Input>(a: &Args, t: &mut Trainer, test: &D) {
         Some(t.evaluate(test, 0, &mut (), &ctl).accuracy())
     });
     t.perturb = None;
+    app::early_exit(a, || {
+        t.exits = Some(Exits::default());
+        t.evaluate(test, 0, &mut (), &ctl);
+        t.exits.take().unwrap_or_default()
+    });
 }
 
 fn session<D: Input + Send + 'static>(a: Args, p: Params, train: D, test: D) -> Result<(), String> {

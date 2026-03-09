@@ -3,8 +3,9 @@
 use crate::layer::{Layer, Observer, Outcome, Reward, Step};
 use crate::params::{Params, Rule};
 use snn_core::encode::{receptive_field, SpikeTrain};
+use snn_core::exit::{checkpoint, Partial};
 use snn_core::{
-    Activity, Control, Dataset, EpochResult, ImageInfo, Pacer, Pass, Perturb, Recent, Rng,
+    Activity, Control, Dataset, EpochResult, Exits, ImageInfo, Pacer, Pass, Perturb, Recent, Rng,
 };
 use snn_live::app::Printer;
 use std::time::Instant;
@@ -115,16 +116,32 @@ impl Monitor for Printer {
     }
 }
 
+/// Spikes so far after each step and the step the winner appeared at.
+#[derive(Debug, Clone, Default)]
+struct Track {
+    spikes: Vec<u64>,
+    decided: Option<usize>,
+}
+
 struct Hook<'a, M: Monitor> {
     mon: &'a mut M,
     pacer: &'a mut Pacer,
     ctl: &'a Control,
     learn: bool,
+    track: Option<&'a mut Track>,
 }
 
 impl<M: Monitor> Observer for Hook<'_, M> {
     fn step(&mut self, s: &Step) {
         self.mon.step(s);
+        if let Some(tr) = self.track.as_mut() {
+            let before = tr.spikes.last().copied().unwrap_or(0);
+            tr.spikes
+                .push(before + (s.active.len() + s.fired.len()) as u64);
+            if tr.decided.is_none() && s.winner.is_some() {
+                tr.decided = Some(s.t);
+            }
+        }
         // only training is paced; evaluation runs flat out
         if self.learn {
             self.pacer.tick(self.ctl);
@@ -140,6 +157,9 @@ pub struct Trainer {
     pub labels: Labels,
     /// damage done to test images, for robustness curves
     pub perturb: Option<Perturb>,
+    /// totals of answers cut short, gathered while testing
+    pub exits: Option<Exits>,
+    track: Track,
     rng: Rng,
     pot: Vec<f32>,
     train: SpikeTrain,
@@ -164,6 +184,8 @@ impl Trainer {
             layer,
             labels,
             perturb: None,
+            exits: None,
+            track: Track::default(),
             rng,
             pot: Vec::new(),
             train: SpikeTrain::new(),
@@ -203,11 +225,15 @@ impl Trainer {
         }
         mon.image_start(&info, img, &self.train);
 
+        let tracking = self.exits.is_some() && !info.learn;
+        self.track.spikes.clear();
+        self.track.decided = None;
         let mut hook = Hook {
             mon,
             pacer: &mut self.pacer,
             ctl,
             learn: info.learn,
+            track: tracking.then_some(&mut self.track),
         };
         let outcome = if info.learn && p.rule == Rule::Reward {
             // as in Mozafari et al., rewards scale with the miss rate and
@@ -226,6 +252,20 @@ impl Trainer {
         let activity = outcome.activity(self.layer.n_out);
         let predicted = outcome.winner.and_then(|w| self.labels.of(w));
         let correct = predicted == Some(info.label);
+        if let Some(e) = self.exits.as_mut().filter(|_| tracking) {
+            // the first neuron over threshold answers; nothing after changes it
+            let (spikes, decided) = (&self.track.spikes, self.track.decided);
+            let at = std::array::from_fn(|k| {
+                let step = checkpoint(k, spikes.len());
+                let sure = decided.is_some_and(|d| d <= step);
+                Partial {
+                    answer: predicted.filter(|_| sure),
+                    spikes: spikes[step - 1],
+                    sure,
+                }
+            });
+            e.record(info.label, &at);
+        }
         if info.learn {
             if let Some(w) = outcome.winner {
                 self.labels.record(w, info.label);
@@ -352,6 +392,7 @@ impl Trainer {
 mod tests {
     use super::*;
     use snn_core::dataset::synthetic;
+    use snn_core::exit::POINTS;
 
     #[test]
     fn labels_follow_recent_wins() {
@@ -442,6 +483,30 @@ mod tests {
         let w = t.fit(&train, None, 1, &mut (), &ctl)[0].train_accuracy;
         assert!(w > 0.3, "training images are not damaged: {w}");
         assert_ne!(t.layer.weights(), before.as_slice());
+    }
+
+    #[test]
+    fn early_answers_cost_fewer_spikes() {
+        let train = synthetic(800, 1);
+        let test = synthetic(200, 2);
+        let mut t = Trainer::new(Params::default(), 784, 20, 10, 7);
+        let ctl = Control::new(0);
+        t.fit(&train, None, 1, &mut (), &ctl);
+        let full = t.evaluate(&test, 0, &mut (), &ctl).accuracy();
+        t.exits = Some(Exits::default());
+        t.evaluate(&test, 0, &mut (), &ctl);
+        let e = t.exits.take().unwrap();
+        let acc = e.accuracy();
+        assert_eq!(
+            acc[POINTS - 1],
+            full,
+            "the last checkpoint is the full answer"
+        );
+        assert!(acc[0] < acc[POINTS - 1] && acc.windows(2).all(|w| w[0] <= w[1]));
+        let (sure, steps, spikes) = e.sure();
+        // a winner never changes its mind, so stopping at it loses nothing
+        assert_eq!(sure, full);
+        assert!(steps < 0.8 && spikes < steps + 0.1, "{steps} {spikes}");
     }
 
     #[test]
