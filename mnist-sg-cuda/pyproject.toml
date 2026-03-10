@@ -15,8 +15,12 @@ dependencies = [
     "nvidia-cublas-cu12>=12.9",
 ]
 
+[project.optional-dependencies]
+# the Spiking Heidelberg Digits come as HDF5
+shd = ["h5py"]
+
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "h5py"]
 
 [project.scripts]
 mnist-sg-cuda = "sg_cuda.__main__:main"

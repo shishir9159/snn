@@ -1,6 +1,7 @@
 data := "data/mnist"
 mirror := "https://storage.googleapis.com/cvdf-datasets/mnist"
 fashion := "http://fashion-mnist.s3-website.eu-central-1.amazonaws.com"
+shd_url := "https://zenkelab.org/datasets"
 # SLAYER's 1,100-sample slice of N-MNIST, pinned to the commit that added it
 nmnist_small := "https://github.com/bamsumit/slayerPytorch/raw/3626f6a772d5d07171c39ddbeb13b3e23c6c8415/example/02_NMNIST_MLP/NMNISTsmall.zip"
 
@@ -40,6 +41,13 @@ nmnist-small:
     cd data/nmnist-small && sha256sum --check --quiet "$OLDPWD/nmnist-small.sha256"
     uv run --no-project python scripts/nmnist_small.py data/nmnist-small
 
+# the Spiking Heidelberg Digits (170 MB), checked and unpacked for --shd data/shd
+shd:
+    mkdir -p data/shd
+    for f in shd_train shd_test; do         [ -f data/shd/$f.h5.gz ] || { curl -#fL --retry 3 -o data/shd/$f.h5.gz.part {{shd_url}}/$f.h5.gz && mv data/shd/$f.h5.gz.part data/shd/$f.h5.gz; } || exit 1;     done
+    cd data/shd && sha256sum --check --quiet "$OLDPWD/shd.sha256"
+    cd data/shd && for f in shd_train shd_test; do [ -f $f.h5 ] || gunzip -k $f.h5.gz; done
+
 # format, lint and test the way CI does
 check:
     cargo fmt --all --check
@@ -67,6 +75,10 @@ bench-all *args: mnist
 # surrogate-gradient SNN trained by backpropagation through time (CuPy, or NumPy without a GPU)
 mnist-sg-cuda *args: mnist
     uv run --package sg-cuda python -m sg_cuda --mnist {{data}} {{args}}
+
+# the surrogate-gradient SNN, recurrent, on the Spiking Heidelberg Digits
+shd-sg-cuda *args: shd
+    uv run --package sg-cuda --extra shd python -m sg_cuda --shd data/shd --recurrent {{args}}
 
 # Rust CPU vs CUDA, interleaved best-of-5
 snn-cuda-bench *args:

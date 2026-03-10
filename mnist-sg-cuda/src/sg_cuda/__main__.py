@@ -10,6 +10,7 @@ def parse(argv):
     a = argparse.ArgumentParser(prog="mnist-sg-cuda", description="surrogate-gradient SNN")
     src = a.add_mutually_exclusive_group(required=True)
     src.add_argument("--mnist", metavar="DIR", help="MNIST idx files (plain or .gz) in DIR")
+    src.add_argument("--shd", metavar="DIR", help="Spiking Heidelberg Digits (shd_*.h5[.gz]) in DIR")
     a.add_argument("--train", type=int, help="training samples")
     a.add_argument("--test", type=int, help="test samples")
     a.add_argument("--epochs", type=int, default=1, help="passes over the training set")
@@ -61,7 +62,10 @@ class Printer:
 
 
 def load(a):
-    train, test = data.mnist(a.mnist, True, a.steps), data.mnist(a.mnist, False, a.steps)
+    if a.shd:
+        train, test = data.shd(a.shd, True, a.steps), data.shd(a.shd, False, a.steps)
+    else:
+        train, test = data.mnist(a.mnist, True, a.steps), data.mnist(a.mnist, False, a.steps)
     for d, n in ((train, a.train), (test, a.test)):
         if n is not None:
             d.truncate(n)

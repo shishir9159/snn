@@ -2,6 +2,7 @@
 spike per pixel, or the Spiking Heidelberg Digits."""
 
 import gzip
+import io
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -85,3 +86,32 @@ def mnist(folder, train=True, steps=100, threshold=0.2):
         units.append(lit)
     name = f"{Path(folder).name}/{s}"
     return Spikes(name, rows * cols, steps, 1.0, labels, times, units, (cols, rows), px.copy())
+
+
+def shd(folder, train=True, steps=100, max_ms=1400.0):
+    """The Spiking Heidelberg Digits (Cramer et al. 2020): the digits 0-9
+    spoken in English and German, 20 classes, as spikes of 700 cochlea
+    channels. Spikes in the first `max_ms` are binned into `steps` steps."""
+    import h5py
+
+    stem = "shd_train.h5" if train else "shd_test.h5"
+    path = Path(folder) / stem
+    if path.is_file():
+        f = h5py.File(path, "r")
+    elif path.with_suffix(".h5.gz").is_file():
+        f = h5py.File(io.BytesIO(gzip.decompress(path.with_suffix(".h5.gz").read_bytes())), "r")
+    else:
+        raise FileNotFoundError(f"{stem} not found in {folder}")
+    with f:
+        seconds, channels = f["spikes"]["times"][:], f["spikes"]["units"][:]
+        labels = f["labels"][:].astype(np.uint8)
+    width = max_ms / steps
+    times, units = [], []
+    for sec, ch in zip(seconds, channels):
+        step = (sec.astype(np.float64) * 1000.0 / width).astype(np.int64)
+        keep = step < steps
+        times.append(step[keep])
+        units.append(ch[keep].astype(np.int64))
+    name = f"shd/{'train' if train else 'test'}"
+    # the channels drawn as a 28 x 25 grid
+    return Spikes(name, 700, steps, width, labels, times, units, (28, 25), static=False)
