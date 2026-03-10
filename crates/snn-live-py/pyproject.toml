@@ -21,4 +21,5 @@ cache-keys = [
     { file = "src/**/*.rs" },
     { file = "../snn-core/src/**/*.rs" },
     { file = "../snn-live/src/**/*.rs" },
+    { file = "../../web/**/*" },
 ]

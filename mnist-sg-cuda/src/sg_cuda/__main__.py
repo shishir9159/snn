@@ -20,6 +20,9 @@ def parse(argv):
     a.add_argument("--batch", type=int, default=128, help="samples per gradient step")
     a.add_argument("--lr", type=float, help="Adam step size (default 1e-3)")
     a.add_argument("--steps", type=int, default=100, help="steps a sample is binned into")
+    a.add_argument("--live", action="store_true", help="serve the live view (needs snn_live)")
+    a.add_argument("--port", type=int, default=7878, help="live view port")
+    a.add_argument("--speed", default="1", help="multiple of real time, or max (live only)")
     return a, a.parse_args(argv)
 
 
@@ -84,6 +87,12 @@ def main(argv=None):
     print(f"{train.name}: {len(train)} train, {len(test)} test, {train.n_in} inputs, "
           f"{train.steps} steps of {train.dt_ms:g} ms, {classes} classes, on {backend.name()}")
     t = Trainer(train.n_in, classes, p, a.seed, a.batch)
+    if a.live:
+        from .live import LiveRun
+
+        speed = None if a.speed == "max" else float(a.speed)
+        LiveRun(t, train, test, a.epochs, a.port, speed).fit()
+        return
     printer = Printer(len(train), t.net.dense_macs(train.steps, train.static))
     t.on_batch = printer.batch
     t.fit(train, test, a.epochs, printer.epoch)

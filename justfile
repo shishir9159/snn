@@ -74,11 +74,11 @@ bench-all *args: mnist
 
 # surrogate-gradient SNN trained by backpropagation through time (CuPy, or NumPy without a GPU)
 mnist-sg-cuda *args: mnist
-    uv run --package sg-cuda python -m sg_cuda --mnist {{data}} {{args}}
+    uv run --package sg-cuda --extra live python -m sg_cuda --mnist {{data}} {{args}}
 
 # the surrogate-gradient SNN, recurrent, on the Spiking Heidelberg Digits
 shd-sg-cuda *args: shd
-    uv run --package sg-cuda --extra shd python -m sg_cuda --shd data/shd --recurrent {{args}}
+    uv run --package sg-cuda --extra shd --extra live python -m sg_cuda --shd data/shd --recurrent {{args}}
 
 # Rust CPU vs CUDA, interleaved best-of-5
 snn-cuda-bench *args:

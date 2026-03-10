@@ -447,10 +447,11 @@ function popView(model) {
 // left to right in POPS order. Model views can call it for part of their figure.
 function drawPops(x, w, h, P, only) {
   const ps = S.pops.map((q, i) => [q, i]).filter(([q, i]) => !only || only.includes(i));
-  const pad = 28, slot = (w - 2 * pad) / ps.length, hits = [];
+  // grids start below the panel title, whatever their size
+  const pad = 28, top = 56, slot = (w - 2 * pad) / ps.length, hits = [];
   rulers(x, w, h);
   ps.forEach(([q, i], k) => {
-    const size = Math.min(slot * 0.8, h - 2 * pad - 20), ox = pad + k * slot + (slot - size) / 2, oy = (h - size) / 2;
+    const size = Math.min(slot * 0.8, h - top - pad), ox = pad + k * slot + (slot - size) / 2, oy = top + (h - top - pad - size) / 2;
     const glow = P.glow[i];
     const cs = drawGrid(x, ox, oy, size, q.w, q.h, (u) => {
       if (u >= q.size) return null;

@@ -18,9 +18,14 @@ dependencies = [
 [project.optional-dependencies]
 # the Spiking Heidelberg Digits come as HDF5
 shd = ["h5py"]
+# the live view runs in the Rust server built from crates/snn-live-py
+live = ["snn-live"]
 
 [dependency-groups]
 dev = ["pytest", "h5py"]
+
+[tool.uv.sources]
+snn-live = { workspace = true }
 
 [project.scripts]
 mnist-sg-cuda = "sg_cuda.__main__:main"

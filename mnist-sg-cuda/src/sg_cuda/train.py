@@ -20,7 +20,7 @@ class Trainer:
         self.batch = batch
         # called after every training batch with (epoch, samples done, total, running accuracy)
         self.on_batch = None
-        # called with (epoch, idx, labels, state, scores) for every training batch
+        # called with (epoch, idx, labels, state, scores, loss) for every training batch
         self.watch = None
         self.recent = []
 
@@ -37,7 +37,7 @@ class Trainer:
         for idx in self._batches(len(data), True):
             x, y = data.batch(idx), xp.asarray(data.labels[idx].astype(np.int64))
             state = self.net.forward(x)
-            _, g = self.net.loss(state, y)
+            loss, g = self.net.loss(state, y)
             self.opt.step(self.net.w, self.net.backward(state, g))
             scores = Net.scores(state)
             right = host(scores.argmax(axis=1) == y)
@@ -47,7 +47,7 @@ class Trainer:
             spikes, synops = spikes + float(s.sum()), synops + float(o.sum())
             done += len(idx)
             if self.watch:
-                self.watch(epoch, idx, data.labels[idx], state, scores)
+                self.watch(epoch, idx, data.labels[idx], state, scores, loss)
             if self.on_batch:
                 self.on_batch(epoch, done, len(data), self.running_accuracy())
         n = max(len(data), 1)

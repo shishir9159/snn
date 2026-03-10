@@ -368,6 +368,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+live = [
+    { name = "snn-live" },
+]
 shd = [
     { name = "h5py" },
 ]
@@ -386,8 +389,9 @@ requires-dist = [
     { name = "nvidia-cublas-cu12", specifier = ">=12.9" },
     { name = "nvidia-cuda-nvrtc-cu12", specifier = ">=12.9.86" },
     { name = "nvidia-cuda-runtime-cu12", specifier = ">=12.9.79" },
+    { name = "snn-live", marker = "extra == 'live'", editable = "crates/snn-live-py" },
 ]
-provides-extras = ["shd"]
+provides-extras = ["shd", "live"]
 
 [package.metadata.requires-dev]
 dev = [
