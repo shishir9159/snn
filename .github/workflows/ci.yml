@@ -23,6 +23,6 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
       # no GPU here: the CUDA tests skip themselves, the rest runs on numpy
-      - run: uv run --no-project --with numpy --with pytest python -m pytest mnist-snn-cuda/tests scripts
+      - run: uv run --no-project --with numpy --with pytest python -m pytest mnist-snn-cuda/tests mnist-sg-cuda/tests scripts
         env:
-          PYTHONPATH: mnist-snn-cuda/src
+          PYTHONPATH: mnist-snn-cuda/src:mnist-sg-cuda/src

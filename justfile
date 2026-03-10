@@ -46,6 +46,7 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace --exclude snn-live-py
     uv run --package snn-cuda pytest mnist-snn-cuda/tests scripts
+    uv run --package sg-cuda pytest mnist-sg-cuda/tests
 
 # rewrite the Rust sources in the standard format
 fmt:
@@ -62,6 +63,10 @@ mnist-snn-cuda *args: mnist
 # time every Rust model and train each over seeds (accuracy, spikes, energy); --robustness and --early-exit add curves, --save DIR keeps the build, --against DIR compares to one
 bench-all *args: mnist
     uv run --no-project python scripts/bench_all.py --mnist {{data}} {{args}}
+
+# surrogate-gradient SNN trained by backpropagation through time (CuPy, or NumPy without a GPU)
+mnist-sg-cuda *args: mnist
+    uv run --package sg-cuda python -m sg_cuda --mnist {{data}} {{args}}
 
 # Rust CPU vs CUDA, interleaved best-of-5
 snn-cuda-bench *args:

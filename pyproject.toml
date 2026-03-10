@@ -1,6 +1,6 @@
 # uv workspace for the Python projects; `uv sync` builds both into ./.venv
 [tool.uv.workspace]
-members = ["mnist-snn-cuda", "crates/snn-live-py"]
+members = ["mnist-snn-cuda", "mnist-sg-cuda", "crates/snn-live-py"]
 
 [tool.uv]
 # packages as they were when this code was written, like the pinned Rust crates
