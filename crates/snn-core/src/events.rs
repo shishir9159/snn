@@ -67,8 +67,15 @@ pub struct Events {
     pub side: usize,
     start: Vec<u32>,
     ids: Vec<u16>,
+    /// the image inside a blank margin, so a shifted lookup never leaves it
     img: Vec<f32>,
+    /// pixels that can change: their id and their index in `img`
+    active: Vec<(u16, usize)>,
+    /// log brightness at each active pixel's last event, and the brightness
+    /// that fires its next ON or OFF event
     level: Vec<f32>,
+    on: Vec<f32>,
+    off: Vec<f32>,
 }
 
 impl Events {
@@ -81,78 +88,77 @@ impl Events {
         let side = w.max(h) + 2 * s.pad;
         assert!(2 * side * side <= u16::MAX as usize + 1);
         self.side = side;
+        let margin = s.amplitude.ceil() as usize + 1;
+        let wide = side + 2 * margin;
         self.img.clear();
-        self.img.resize(side * side, 0.0);
+        self.img.resize(wide * wide, 0.0);
         for y in 0..h {
             for x in 0..w {
-                self.img[(y + s.pad) * side + x + s.pad] = pixels[y * w + x] as f32 / 255.0;
+                let at = (y + s.pad + margin) * wide + x + s.pad + margin;
+                self.img[at] = pixels[y * w + x] as f32 / 255.0;
             }
         }
         // only pixels the moving strokes reach ever change
-        let reach = s.amplitude.ceil() as i32 + 1;
-        let lit = |x: i32, y: i32| {
-            x >= 0 && y >= 0 && (x as usize) < side && (y as usize) < side && {
-                self.img[y as usize * side + x as usize] > 0.0
+        let reach = s.amplitude.ceil() as usize + 1;
+        let img = &self.img;
+        let lit = |x: usize, y: usize| img[(y + margin) * wide + x + margin] > 0.0;
+        self.active.clear();
+        for y in 0..side {
+            for x in 0..side {
+                let (x0, y0) = (x.saturating_sub(reach), y.saturating_sub(reach));
+                let near = (y0..=(y + 1).min(side - 1))
+                    .any(|sy| (x0..=(x + 1).min(side - 1)).any(|sx| lit(sx, sy)));
+                if near {
+                    self.active
+                        .push(((y * side + x) as u16, (y + margin) * wide + x + margin));
+                }
             }
-        };
-        let active: Vec<usize> = (0..side * side)
-            .filter(|&i| {
-                let (x, y) = ((i % side) as i32, (i / side) as i32);
-                (x - reach..=x + 1).any(|sx| (y - reach..=y + 1).any(|sy| lit(sx, sy)))
-            })
-            .collect();
-        // brightness each active pixel saw last, its log, and the log at its last event
+        }
         let shade = |v: f32| if s.dark { 1.0 - v } else { v };
-        let mut seen: Vec<f32> = active
-            .iter()
-            .map(|&i| shade(self.bright_at(i, (0.0, 0.0))))
-            .collect();
-        let mut log: Vec<f32> = seen.iter().map(|&b| (b + s.floor).ln()).collect();
-        let mut level = std::mem::take(&mut self.level);
-        level.clear();
-        level.extend_from_slice(&log);
+        // log brightness at the start; an event fires once the brightness has
+        // moved a contrast step from it, compared without taking logs
+        let (c, floor) = (s.contrast, s.floor);
+        let fires = |level: f32| ((level + c).exp() - floor, (level - c).exp() - floor);
+        self.level.clear();
+        self.on.clear();
+        self.off.clear();
+        for &(_, k) in &self.active {
+            let level = (shade(self.img[k]) + floor).ln();
+            let (on, off) = fires(level);
+            self.level.push(level);
+            self.on.push(on);
+            self.off.push(off);
+        }
         self.ids.clear();
         self.start.clear();
         self.start.push(0);
         self.start.push(0);
         for t in 1..=s.steps() {
-            let off = s.offset(t);
-            for (a, &i) in active.iter().enumerate() {
-                let b = shade(self.bright_at(i, off));
-                if b != seen[a] {
-                    seen[a] = b;
-                    log[a] = (b + s.floor).ln();
-                }
-                let d = log[a] - level[a];
-                if d >= s.contrast {
-                    level[a] += s.contrast;
-                    self.ids.push(i as u16);
-                } else if d <= -s.contrast {
-                    level[a] -= s.contrast;
-                    self.ids.push((side * side + i) as u16);
-                }
+            // every pixel sees the image at the same sub-pixel offset
+            let (ox, oy) = s.offset(t);
+            let (sx, sy) = ((-ox).floor(), (-oy).floor());
+            let (fx, fy) = (-ox - sx, -oy - sy);
+            let shift = sy as isize * wide as isize + sx as isize;
+            for (a, &(id, k)) in self.active.iter().enumerate() {
+                let k = k.wrapping_add_signed(shift);
+                let img = &self.img;
+                let top = img[k] * (1.0 - fx) + img[k + 1] * fx;
+                let bottom = img[k + wide] * (1.0 - fx) + img[k + wide + 1] * fx;
+                let b = shade(top * (1.0 - fy) + bottom * fy);
+                let moved = if b >= self.on[a] {
+                    self.ids.push(id);
+                    c
+                } else if b <= self.off[a] {
+                    self.ids.push((side * side) as u16 + id);
+                    -c
+                } else {
+                    continue;
+                };
+                self.level[a] += moved;
+                (self.on[a], self.off[a]) = fires(self.level[a]);
             }
             self.start.push(self.ids.len() as u32);
         }
-        self.level = level;
-    }
-
-    // brightness pixel i sees with the image shifted by `off`, bilinear
-    fn bright_at(&self, i: usize, off: (f32, f32)) -> f32 {
-        let side = self.side;
-        let (x, y) = ((i % side) as f32 - off.0, (i / side) as f32 - off.1);
-        let (x0, y0) = (x.floor(), y.floor());
-        let (fx, fy) = (x - x0, y - y0);
-        let at = |xx: f32, yy: f32| {
-            if xx < 0.0 || yy < 0.0 || xx >= side as f32 || yy >= side as f32 {
-                0.0
-            } else {
-                self.img[yy as usize * side + xx as usize]
-            }
-        };
-        let top = at(x0, y0) * (1.0 - fx) + at(x0 + 1.0, y0) * fx;
-        let bottom = at(x0, y0 + 1.0) * (1.0 - fx) + at(x0 + 1.0, y0 + 1.0) * fx;
-        top * (1.0 - fy) + bottom * fy
     }
 
     /// Takes a recording instead of generating events: `start` has one offset per

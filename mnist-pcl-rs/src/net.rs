@@ -9,6 +9,30 @@ use crate::params::Params;
 use snn_core::{weights, Activity, Rng};
 
 const NEVER: i32 = -1_000_000;
+/// Step gaps the exponential tables cover; longer ones are computed.
+const GAPS: usize = 1024;
+
+/// `exp(-k / tau)` for k = 0..GAPS, written as the callers write it, so a
+/// lookup gives the very value a call would.
+#[derive(Debug, Clone)]
+struct Decay {
+    tau: f32,
+    table: Vec<f32>,
+}
+
+impl Decay {
+    fn new(tau: f32) -> Self {
+        let table = (0..GAPS).map(|k| (-(k as f32) / tau).exp()).collect();
+        Self { tau, table }
+    }
+
+    fn after(&self, steps: u32) -> f32 {
+        match self.table.get(steps as usize) {
+            Some(&d) => d,
+            None => (-(steps as f32) / self.tau).exp(),
+        }
+    }
+}
 
 /// Event-driven leaky integrate-and-fire cells.
 #[derive(Debug, Clone)]
@@ -21,7 +45,7 @@ pub struct Cells {
     pub prev: Vec<i32>,
     /// spikes since the last reset
     pub counts: Vec<u32>,
-    tau: f32,
+    decay: Decay,
 }
 
 impl Cells {
@@ -32,7 +56,7 @@ impl Cells {
             last: vec![NEVER; n],
             prev: vec![NEVER; n],
             counts: vec![0; n],
-            tau,
+            decay: Decay::new(tau),
         }
     }
 
@@ -56,7 +80,7 @@ impl Cells {
     pub fn at(&mut self, i: usize, t: u32) -> f32 {
         let dt = t.saturating_sub(self.seen[i]);
         if dt > 0 {
-            self.v[i] *= (-(dt as f32) / self.tau).exp();
+            self.v[i] *= self.decay.after(dt);
             self.seen[i] = t;
         }
         self.v[i]
@@ -64,8 +88,7 @@ impl Cells {
 
     /// Potential of cell `i` at step `t` without bringing it up to date.
     pub fn peek(&self, i: usize, t: u32) -> f32 {
-        let dt = t.saturating_sub(self.seen[i]);
-        self.v[i] * (-(dt as f32) / self.tau).exp()
+        self.v[i] * self.decay.after(t.saturating_sub(self.seen[i]))
     }
 
     fn fire(&mut self, i: usize, t: u32, reset: f32) {
@@ -105,6 +128,10 @@ pub struct Net {
     pub inhibition: f32,
     /// synapses reached by a spike since the last reset
     synops: u64,
+    /// relative refractoriness, potentiation and depression windows
+    rp: Decay,
+    ltp: Decay,
+    ltd: Decay,
 }
 
 impl Net {
@@ -125,6 +152,9 @@ impl Net {
             excitation: 0.0,
             inhibition: 0.0,
             synops: 0,
+            rp: Decay::new(p.tau_rp),
+            ltp: Decay::new(p.tau_ltp),
+            ltd: Decay::new(p.tau_ltd),
             side,
             n,
             m,
@@ -260,7 +290,7 @@ impl Net {
         let mut v = self.simple.at(s, t) + w;
         let last = self.simple.last[s];
         if last != NEVER {
-            v -= p.eta_rp * (-((t as i32 - last) as f32) / p.tau_rp).exp();
+            v -= p.eta_rp * self.rp.after((t as i32 - last) as u32);
         }
         self.excitation += w;
         if v >= p.v_thr && last != t as i32 {
@@ -360,7 +390,7 @@ impl Net {
             let y = sy as usize * stride + ry;
             let x = sx as usize * stride + rx;
             let ti = self.in_last[pol * side * side + y * side + x];
-            *w = (*w + stdp(ti, t, prev, p.ltp, p.ltd, p)).max(0.0);
+            *w = (*w + stdp(ti, t, prev, p.ltp, p.ltd, &self.ltp, &self.ltd)).max(0.0);
         }
         set_norm(row, p.norm_exc);
         // inhibitory STDP: inhibition that came just before this spike grows
@@ -374,7 +404,7 @@ impl Net {
                 let pre = (ny as usize * self.n + nx as usize) * k + g;
                 let tp = self.simple.last[pre];
                 let w = &mut self.lat[s * ll + d * k + g];
-                *w = (*w + stdp(tp, t, prev, p.i_ltp, p.i_ltd, p)).max(0.0);
+                *w = (*w + stdp(tp, t, prev, p.i_ltp, p.i_ltd, &self.ltp, &self.ltd)).max(0.0);
             }
         }
         set_norm(&mut self.lat[s * ll..][..ll], p.norm_lateral);
@@ -389,7 +419,7 @@ impl Net {
                 let pre = (cy as usize * self.m + cx as usize) * kc + c;
                 let tp = self.complex.last[pre];
                 let w = &mut self.td[s * tdl + q as usize * kc + c];
-                *w = (*w + stdp(tp, t, prev, p.i_ltp, p.i_ltd, p)).max(0.0);
+                *w = (*w + stdp(tp, t, prev, p.i_ltp, p.i_ltd, &self.ltp, &self.ltd)).max(0.0);
             }
         }
         set_norm(&mut self.td[s * tdl..][..tdl], p.norm_top_down);
@@ -436,16 +466,16 @@ impl Net {
 /// Exponential STDP from a presynaptic spike at `tp` to a postsynaptic spike at
 /// `t`: potentiation when it came before, depression when it came after the
 /// previous postsynaptic spike `prev`.
-fn stdp(tp: i32, t: i32, prev: i32, ltp: f32, ltd: f32, p: &Params) -> f32 {
+fn stdp(tp: i32, t: i32, prev: i32, ltp: f32, ltd: f32, up: &Decay, down: &Decay) -> f32 {
     if tp == NEVER {
         return 0.0;
     }
     let mut dw = 0.0;
     if tp <= t {
-        dw += ltp * ((tp - t) as f32 / p.tau_ltp).exp();
+        dw += ltp * up.after((t - tp) as u32);
     }
     if prev != NEVER && tp >= prev && tp < t {
-        dw -= ltd * ((prev - tp) as f32 / p.tau_ltd).exp();
+        dw -= ltd * down.after((tp - prev) as u32);
     }
     dw
 }
