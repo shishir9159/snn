@@ -28,12 +28,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 EXE = ".exe" if sys.platform == "win32" else ""
 # name, crate, profile example, images the profile runs over, epochs of the
-# quality run (PC-SNN learns from the labels over several passes)
+# quality run (PC-SNN learns from the labels over several passes; for the
+# DCSNN they are R-STDP epochs after its six of feature learning)
 MODELS = [
     ("wta", "mnist-snn-rs", "profile", 3000, 1),
     ("spncn", "mnist-spncn-rs", "spncn-profile", 300, 1),
     ("pcsnn", "mnist-pcsnn-rs", "pcsnn-profile", 300, 8),
     ("pcl", "mnist-pcl-rs", "pcl-profile", 600, 1),
+    ("dcsnn", "mnist-dcsnn-rs", "dcsnn-profile", 1000, 4),
 ]
 PHASE = re.compile(r"^(.+?)\s+([\d.]+) us/img", re.M)
 EPOCH = re.compile(

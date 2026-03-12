@@ -9,6 +9,11 @@ name = "mnist_dcsnn"
 
 [dependencies]
 snn-core.workspace = true
+snn-live.workspace = true
+
+[[bin]]
+name = "mnist-dcsnn-rs"
+path = "src/main.rs"
 
 [[example]]
 name = "dcsnn-profile"

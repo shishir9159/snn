@@ -199,15 +199,16 @@ impl Printer {
         }
     }
 
+    /// A NaN running accuracy means the model gives no answers yet.
     pub fn image(&mut self, i: &ImageInfo, running_accuracy: f32) {
         if i.learn && (i.index + 1).is_multiple_of(self.every) {
             let rate = self.every as f32 / self.t0.elapsed().as_secs_f32();
             println!(
-                "epoch {}  {:>6}/{}  running acc {:5.1}%  {:6.0} img/s",
+                "epoch {}  {:>6}/{}  running acc {:>6}  {:6.0} img/s",
                 i.epoch + 1,
                 i.index + 1,
                 i.total,
-                running_accuracy * 100.0,
+                percent(running_accuracy),
                 rate
             );
             self.t0 = Instant::now();
@@ -216,14 +217,11 @@ impl Printer {
 
     pub fn epoch(&mut self, e: &EpochResult) {
         self.t0 = Instant::now();
-        let test = e
-            .test_accuracy
-            .map_or("-".into(), |a| format!("{:.1}%", a * 100.0));
         println!(
-            "epoch {} done: train {:.1}%  test {}  ({:.0} img/s){}",
+            "epoch {} done: train {}  test {}  ({:.0} img/s){}",
             e.epoch + 1,
-            e.train_accuracy * 100.0,
-            test,
+            percent(e.train_accuracy),
+            percent(e.test_accuracy.unwrap_or(f32::NAN)),
             e.images_per_sec,
             self.costs(e)
         );
@@ -248,6 +246,15 @@ impl Printer {
             s += &format!(" vs {} dense", joules(Costs::FP32.dense(self.dense)));
         }
         s
+    }
+}
+
+// an accuracy as a percentage, `-` for NaN
+fn percent(a: f32) -> String {
+    if a.is_nan() {
+        "-".into()
+    } else {
+        format!("{:.1}%", a * 100.0)
     }
 }
 

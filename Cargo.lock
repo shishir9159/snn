@@ -206,6 +206,7 @@ name = "mnist-dcsnn-rs"
 version = "0.1.0"
 dependencies = [
  "snn-core",
+ "snn-live",
 ]
 
 [[package]]

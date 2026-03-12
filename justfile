@@ -21,6 +21,10 @@ mnist-pcsnn-rs *args: mnist
 mnist-pcl-rs *args: mnist
     cargo run --release -p mnist-pcl-rs -- --mnist {{data}} {{args}}
 
+# convolutional STDP features feeding R-STDP decisions (Mozafari et al.), live view at http://127.0.0.1:7878
+mnist-dcsnn-rs *args: mnist
+    cargo run --release -p mnist-dcsnn-rs -- --mnist {{data}} {{args}}
+
 # fetch the MNIST idx files, skipping ones already present, and check their sums
 mnist: (_idx data mirror "mnist.sha256")
 
