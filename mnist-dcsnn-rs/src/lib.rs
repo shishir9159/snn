@@ -3,6 +3,7 @@
 //! (Kheradpisheh et al. 2018), and a decision layer trained by
 //! reward-modulated STDP.
 
+pub mod conv;
 pub mod input;
 pub mod params;
 pub mod wave;
