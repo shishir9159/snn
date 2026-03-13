@@ -41,12 +41,13 @@ macro_rules! view {
 }
 
 /// One script per model, picked by the dashboard from META.
-const VIEWS: [(&str, &str); 5] = [
+const VIEWS: [(&str, &str); 6] = [
     view!("pop"),
     view!("wta"),
     view!("spncn"),
     view!("pcsnn"),
     view!("pcl"),
+    view!("dcsnn"),
 ];
 
 /// Files compiled into the binary, by request path.

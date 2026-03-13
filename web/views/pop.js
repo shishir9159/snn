@@ -238,7 +238,9 @@ function popView(model) {
     const label = o ? o.label : S.label;
     $("truth-v").textContent = label >= 0 ? `label ${label}` + (S.learn ? "" : " · test") : "";
     const b = $("badge-v");
-    if (o) { b.className = "badge " + (o.correct ? "ok" : "miss"); b.textContent = o.correct ? "✓ correct" : o.predicted === NONE ? "✗ no answer" : "✗ wrong"; }
+    // a view's note stands in for the verdict while the model is not answering
+    if (o && o.note) { b.className = "badge"; b.textContent = o.note; }
+    else if (o) { b.className = "badge " + (o.correct ? "ok" : "miss"); b.textContent = o.correct ? "✓ correct" : o.predicted === NONE ? "✗ no answer" : "✗ wrong"; }
     else { b.className = "badge"; b.textContent = ""; }
   }
   const argmax = (a) => { if (!a) return -1; let b = -1, m = 0; a.forEach((v, i) => { if (v > m) { m = v; b = i; } }); return b; };

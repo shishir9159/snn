@@ -1,7 +1,9 @@
+use mnist_dcsnn::tap::{self, Tap};
 use mnist_dcsnn::train::Trainer;
 use mnist_dcsnn::Params;
 use snn_core::{weights, Control, Dataset, Exits, Overrides};
 use snn_live::app::{self, Args, Printer};
+use snn_live::frame::{self, Buf, Meta, Param, Pop, Role};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -29,6 +31,52 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Args, Opts), St
     })?;
     set.apply(|k, v| o.params.set(k, v))?;
     Ok((a, o))
+}
+
+/// Rows of the dashboard's model panel.
+fn model_params(t: &Trainer, epochs: usize) -> Vec<Param<'static>> {
+    let (p, n) = (&t.net.p, &t.net);
+    let conv = |l: &mnist_dcsnn::params::Layer| {
+        format!("{} × {k}×{k} · θ {}", l.maps, l.threshold, k = l.kernel)
+    };
+    vec![
+        Param::text("Coding", format!("rank order · {} steps", p.steps)),
+        Param::text("S1", "DoG 3 · 7 · 13 ON/OFF".into()),
+        Param::text("L1", conv(&p.l1)),
+        Param::text("L2", conv(&p.l2)),
+        Param::text(
+            "L3",
+            format!(
+                "{} × {k}×{k} · {} / class",
+                n.l3.output.maps,
+                p.per_class,
+                k = p.l3_kernel
+            ),
+        ),
+        Param::text("Pooling", format!("{} · {}", p.l1.pool, p.l2.pool)),
+        Param::text(
+            "Winners",
+            format!(
+                "{} r{} · {} r{}",
+                p.l1.winners, p.l1.radius, p.l2.winners, p.l2.radius
+            ),
+        ),
+        Param::text(
+            "STDP",
+            format!("{} / {} ×2 per {}", p.ltp, p.ltd, p.rate_every),
+        ),
+        Param::text(
+            "R-STDP",
+            format!(
+                "{} / {} · {} / {}",
+                p.reward_ltp, p.reward_ltd, p.punish_ltp, p.punish_ltd
+            ),
+        ),
+        Param::text(
+            "Epochs",
+            format!("{} + {} + {epochs}", p.l1.epochs, p.l2.epochs),
+        ),
+    ]
 }
 
 fn save_fields(o: &Opts, t: &Trainer) -> Result<(), String> {
@@ -67,11 +115,58 @@ fn run(a: Args, o: Opts) -> Result<(), String> {
     let mut trainer = Trainer::new(o.params.clone(), train.width, train.height, classes, a.seed)?;
     let epochs = a.epochs();
     let printer = Printer::new(train.len()).dense(trainer.net.dense_macs());
-    let ctl = Control::new(0);
-    let test_set = (!test.is_empty()).then_some(&test);
-    trainer.fit(&train, test_set, epochs, &mut { printer }, &ctl);
-    robustness(&a, &mut trainer, &test);
-    save_fields(&o, &trainer)
+
+    if a.headless {
+        let ctl = Control::new(0);
+        let test_set = (!test.is_empty()).then_some(&test);
+        trainer.fit(&train, test_set, epochs, &mut { printer }, &ctl);
+        robustness(&a, &mut trainer, &test);
+        return save_fields(&o, &trainer);
+    }
+
+    let net = &trainer.net;
+    let meta = Meta {
+        model: "dcsnn",
+        dataset: &train.name,
+        width: train.width,
+        height: train.height,
+        classes,
+        n_train: train.len(),
+        n_test: test.len(),
+        epochs: trainer.epochs(epochs),
+        steps: net.p.steps,
+        dt_ms: 1.0,
+        dense_macs: net.dense_macs(),
+    };
+    let pop = |name, s: mnist_dcsnn::wave::Shape, role| Pop::grid(name, s.w * s.maps, s.h, role);
+    let pops = [
+        pop("S1", net.input.shape, Role::Input),
+        pop("L1", net.l1.output, Role::Latent),
+        pop("L2", net.l2.output, Role::Latent),
+        pop("L3", net.l3.output, Role::Output),
+    ];
+    let mut packet = app::meta_packet(
+        &meta,
+        "Model · DCSNN",
+        &model_params(&trainer, epochs),
+        &pops,
+    );
+    let (step, probe, image) = Tap::series();
+    let mut b = Buf::new();
+    frame::series(&mut b, &step, &probe, &image);
+    tap::arch(&mut b, &trainer.net);
+    packet.extend(b.take());
+
+    let args = a.clone();
+    app::serve_live(&a, packet, move |hub, ctl| {
+        let tap = Tap::new(hub, ctl.clone());
+        let test_set = (!test.is_empty()).then_some(&test);
+        trainer.fit(&train, test_set, epochs, &mut (tap, printer), &ctl);
+        robustness(&args, &mut trainer, &test);
+        if let Err(e) = save_fields(&o, &trainer) {
+            eprintln!("error: {e}");
+        }
+    })
 }
 
 fn main() -> ExitCode {

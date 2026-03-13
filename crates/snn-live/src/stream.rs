@@ -172,11 +172,14 @@ impl Stream {
     }
 
     /// Counts a finished presentation; training images extend the accuracy
-    /// history and the running mean of activity.
+    /// history and the running mean of activity. A NaN accuracy means the
+    /// model gives no answers yet and stays out of the history.
     pub fn end_image(&mut self, info: &ImageInfo, running_accuracy: f32, activity: Activity) {
         if info.learn {
             self.images += 1;
-            self.history[0].record(self.images, running_accuracy);
+            if !running_accuracy.is_nan() {
+                self.history[0].record(self.images, running_accuracy);
+            }
             let k = 1.0 / SMOOTH.min(self.images as f32);
             let now = activity.per_image(1);
             let mean = &mut self.activity;

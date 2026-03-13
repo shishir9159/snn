@@ -252,7 +252,8 @@ const H = {
       spikes: v.getFloat32(p + 35, true), synops: v.getFloat32(p + 39, true), macs: v.getFloat32(p + 43, true), nj: v.getFloat32(p + 47, true) };
     S.progress = g;
     const last = S.acc[S.acc.length - 1];
-    if (g.learn && g.images > 0 && (!last || last[0] < g.images)) {
+    // NaN: the model gives no answers yet
+    if (g.learn && g.images > 0 && !Number.isNaN(g.acc) && (!last || last[0] < g.images)) {
       S.acc.push([g.images, g.acc]);
       if (S.acc.length > 4000) S.acc = S.acc.filter((_, i) => i % 2 === 0);
       dirty("acc");
@@ -339,7 +340,7 @@ const joules = (nj) => { const [v, u] = nj >= 1e6 ? [nj / 1e6, "mJ"] : nj >= 1e3
 function renderStats() {
   const g = S.progress, m = S.meta;
   if (!g || !m) return;
-  $("acc-v").textContent = g.images ? pctText(g.acc) : "–";
+  $("acc-v").textContent = g.images && !Number.isNaN(g.acc) ? pctText(g.acc) : "–";
   const lt = S.tests[S.tests.length - 1];
   $("test-v").textContent = lt ? pctText(lt[1]) : "–";
   $("epoch-v").textContent = `${g.epoch + 1}/${m.epochs}` + (g.learn ? "" : " test");
@@ -499,6 +500,7 @@ renderControls();
 <script src="/views/spncn.js"></script>
 <script src="/views/pcsnn.js"></script>
 <script src="/views/pcl.js"></script>
+<script src="/views/dcsnn.js"></script>
 <script>connect(); requestAnimationFrame(frame);</script>
 </body>
 </html>

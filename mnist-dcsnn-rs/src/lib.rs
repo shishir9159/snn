@@ -7,6 +7,7 @@ pub mod conv;
 pub mod input;
 pub mod net;
 pub mod params;
+pub mod tap;
 pub mod train;
 pub mod wave;
 
