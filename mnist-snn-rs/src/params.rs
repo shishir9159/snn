@@ -79,6 +79,25 @@ pub struct StdpParams {
     pub a2_ltd: f32,
 }
 
+/// Delayed reward: eligibility traces and dopamine, in steps of 1 ms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DopamineParams {
+    /// eligibility trace time constant
+    pub tau_c: f32,
+    /// dopamine time constant
+    pub tau_d: f32,
+    /// steps from an answer to its reward, plus up to `jitter` more
+    pub delay: u32,
+    pub jitter: u32,
+    /// dopamine per unit of reward: a tag made as its reward arrives moves by
+    /// `gain` times the immediate rule's step
+    pub gain: f32,
+    /// silent steps after each training image, as between conditioning
+    /// trials; rewards still arrive in them. Without one, a reward due 1-3 s
+    /// late lands on the tags of the images after it and learns nothing
+    pub gap: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Params {
     /// steps an image is presented for
@@ -142,6 +161,22 @@ impl Default for StdpParams {
             a2_ltp: 0.0,
             a3_ltp: 0.4,
             a2_ltd: 0.01,
+        }
+    }
+}
+
+impl Default for DopamineParams {
+    fn default() -> Self {
+        // Izhikevich 2007: traces of 1 s, dopamine of 0.2 s, rewards 1-3 s
+        // late; trials 3 s apart so each lands before the next image. A 1-3 s
+        // old tag keeps a sixth of itself on average, which the gain makes up
+        Self {
+            tau_c: 1000.0,
+            tau_d: 200.0,
+            delay: 1000,
+            jitter: 2000,
+            gain: 8.0,
+            gap: 2800,
         }
     }
 }

@@ -223,6 +223,11 @@ impl SpikeTrain {
         &self.input_times[self.input_start[i] as usize..self.input_start[i + 1] as usize]
     }
 
+    /// Whether each input stayed silent, in input order.
+    pub fn silent(&self) -> impl Iterator<Item = bool> + '_ {
+        self.input_start.windows(2).map(|w| w[0] == w[1])
+    }
+
     pub fn total(&self) -> usize {
         self.input_times.len()
     }

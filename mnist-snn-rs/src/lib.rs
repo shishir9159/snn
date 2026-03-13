@@ -1,6 +1,7 @@
 //! Diehl & Cook style MNIST network: LIF neurons, receptive-field rate coding,
 //! STDP and a winner-take-all output layer.
 
+pub mod dopamine;
 pub mod fixed;
 pub mod layer;
 pub mod neuron;

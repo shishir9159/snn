@@ -62,20 +62,35 @@ impl Stdp {
         scale: f32,
         mut round: R,
     ) {
-        let lo = t.saturating_sub(self.p.t_back as usize).max(1);
-        let hi = (t + self.p.t_fore as usize).min(train.steps());
-        for s in lo..=hi {
-            let k = self.table[s + self.p.t_back as usize - t];
+        self.pairs(train, t, |i, k| {
             let dw = if scale < 0.0 {
                 scale * k.abs()
             } else {
                 scale * k
             };
-            for &i in train.active(s) {
-                let w = &mut row[i as usize];
-                *w = round(bounded(*w, dw, &self.p));
-            }
+            let w = &mut row[i];
+            *w = round(bounded(*w, dw, &self.p));
+        });
+    }
+
+    /// Calls `f(input, kernel)` for every pre spike within the window around
+    /// a post spike at step `t`.
+    pub fn pairs<F: FnMut(usize, f32)>(&self, train: &SpikeTrain, t: usize, mut f: F) {
+        for (k, active) in self.window(train, t) {
+            active.iter().for_each(|&i| f(i as usize, k));
         }
+    }
+
+    /// The kernel and the inputs spiking at each step of the window around a
+    /// post spike at step `t`.
+    pub fn window<'a>(
+        &'a self,
+        train: &'a SpikeTrain,
+        t: usize,
+    ) -> impl Iterator<Item = (f32, &'a [u16])> + 'a {
+        let lo = t.saturating_sub(self.p.t_back as usize).max(1);
+        let hi = (t + self.p.t_fore as usize).min(train.steps());
+        (lo..=hi).map(move |s| (self.table[s + self.p.t_back as usize - t], train.active(s)))
     }
 
     /// Depresses synapses from inputs that stayed silent for the whole image.
