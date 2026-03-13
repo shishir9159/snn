@@ -138,6 +138,16 @@ impl Pacer {
             };
         }
     }
+
+    /// `n` steps with nothing to show, as `n` ticks; unthrottled, just one.
+    pub fn ticks(&mut self, n: u64, ctl: &Control) {
+        for _ in 0..n {
+            self.tick(ctl);
+            if self.rate == 0 {
+                return;
+            }
+        }
+    }
 }
 
 impl Default for Pacer {
@@ -160,6 +170,14 @@ mod tests {
         }
         let dt = t0.elapsed().as_secs_f32();
         assert!((0.08..0.3).contains(&dt), "200 steps at 2000/s took {dt}s");
+        let t0 = Instant::now();
+        p.ticks(100, &ctl);
+        let dt = t0.elapsed().as_secs_f32();
+        assert!((0.03..0.2).contains(&dt), "100 quiet steps took {dt}s");
+        ctl.set_speed(0);
+        let t0 = Instant::now();
+        p.ticks(1 << 40, &ctl);
+        assert!(t0.elapsed() < Duration::from_millis(50), "unthrottled");
     }
 
     #[test]

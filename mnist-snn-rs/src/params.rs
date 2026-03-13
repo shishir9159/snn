@@ -15,6 +15,16 @@ pub enum Rule {
     /// pair STDP gated by reward: neuron j answers class j mod classes, a right
     /// first spike is rewarded and a wrong one punished (Mozafari et al. 2018)
     Reward,
+    /// the same answers rewarded late: STDP only tags synapses, and the reward
+    /// arrives as dopamine after a delay (Izhikevich 2007)
+    Delayed,
+}
+
+impl Rule {
+    /// Whether answers are rewarded, so neuron j stands for class j mod classes.
+    pub fn rewarded(self) -> bool {
+        matches!(self, Rule::Reward | Rule::Delayed)
+    }
 }
 
 impl FromStr for Rule {
@@ -25,7 +35,8 @@ impl FromStr for Rule {
             "pair" => Ok(Rule::Pair),
             "triplet" => Ok(Rule::Triplet),
             "reward" => Ok(Rule::Reward),
-            _ => Err(format!("{s} is not pair, triplet or reward")),
+            "delayed" => Ok(Rule::Delayed),
+            _ => Err(format!("{s} is not pair, triplet, reward or delayed")),
         }
     }
 }
@@ -36,6 +47,7 @@ impl fmt::Display for Rule {
             Rule::Pair => "pair",
             Rule::Triplet => "triplet",
             Rule::Reward => "reward",
+            Rule::Delayed => "delayed",
         };
         f.write_str(name)
     }
@@ -128,6 +140,7 @@ pub struct Params {
     /// instead of to the nearest level, so updates below a step still add up
     pub stochastic_rounding: bool,
     pub rule: Rule,
+    pub dopamine: DopamineParams,
 }
 
 impl Default for LifParams {
@@ -198,6 +211,7 @@ impl Default for Params {
             weight_bits: 0,
             stochastic_rounding: true,
             rule: Rule::Pair,
+            dopamine: DopamineParams::default(),
         }
     }
 }
@@ -231,6 +245,12 @@ snn_core::tunable!(Params {
     "a2_ltp" => stdp.a2_ltp,
     "a3_ltp" => stdp.a3_ltp,
     "a2_ltd" => stdp.a2_ltd,
+    "tau_c" => dopamine.tau_c,
+    "tau_d" => dopamine.tau_d,
+    "reward_delay" => dopamine.delay,
+    "reward_jitter" => dopamine.jitter,
+    "image_gap" => dopamine.gap,
+    "dopamine_gain" => dopamine.gain,
     "pot_min" => encode.pot_min,
     "pot_max" => encode.pot_max,
     "freq_min" => encode.freq_min,
@@ -268,6 +288,10 @@ mod tests {
         assert_eq!(p.weight_bits, 4);
         p.set("rule", "reward").unwrap();
         assert_eq!(p.rule, Rule::Reward);
+        p.set("rule", "delayed").unwrap();
+        p.set("reward_delay", "300").unwrap();
+        assert_eq!((p.rule, p.dopamine.delay), (Rule::Delayed, 300));
+        assert!(p.rule.rewarded() && !Rule::Triplet.rewarded());
         assert!(p.set("rule", "hebb").is_err());
         assert_eq!(Rule::Triplet.to_string().parse(), Ok(Rule::Triplet));
         assert!(p.set("leek", "1").is_err());

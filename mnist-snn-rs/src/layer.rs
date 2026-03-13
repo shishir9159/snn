@@ -1,8 +1,9 @@
 //! Winner-take-all output layer fully connected to the input spike train.
 
+use crate::dopamine::{Decision, Dopamine};
 use crate::neuron::Neuron;
 use crate::params::{Params, Rule};
-use crate::stdp::{PostTrace, Stdp, Triplet};
+use crate::stdp::{bounded, PostTrace, Stdp, Triplet};
 use snn_core::encode::SpikeTrain;
 use snn_core::rng::Rng;
 use snn_core::weights;
@@ -53,8 +54,8 @@ impl Outcome {
     }
 }
 
-/// What a training presentation under [`Rule::Reward`] is told: neuron j
-/// answers class `j % classes`.
+/// What a training presentation under [`Rule::Reward`] or [`Rule::Delayed`]
+/// is told: neuron j answers class `j % classes`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Reward {
     pub label: u8,
@@ -69,6 +70,7 @@ enum Learn {
     Off,
     On,
     Reward(Reward),
+    Delayed(Reward),
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +91,10 @@ pub struct Layer {
     post: Vec<PostTrace>,
     thresholds: Vec<f32>,
     fired: Vec<u16>,
+    /// eligibility traces and dopamine of the delayed rule
+    pub dopamine: Dopamine,
+    /// (neuron, step) of each output spike, which the delayed rule tags from
+    spikes: Vec<(u16, u16)>,
     /// the weight grid, when the weights are stored in fewer bits
     quant: Option<Quantizer>,
     qrng: Rng,
@@ -136,6 +142,8 @@ impl Layer {
             post: vec![PostTrace::default(); n_out],
             thresholds: vec![0.0; n_out],
             fired: Vec::with_capacity(n_out),
+            dopamine: Dopamine::new(&p.dopamine, n_in, n_out),
+            spikes: Vec::new(),
             quant,
             qrng: Rng::new(0x51ab),
         }
@@ -179,7 +187,8 @@ impl Layer {
     /// A training presentation under reward-modulated STDP: once the winner
     /// answers, its spikes apply the pair rule scaled by `r.reward` if the
     /// answer is right, and depress the inputs around them scaled by
-    /// `r.punish` if it is wrong.
+    /// `r.punish` if it is wrong. Under [`Rule::Delayed`] they only tag the
+    /// synapses, and the reward reaches them later through [`Dopamine`].
     pub fn present_rewarded<O: Observer>(
         &mut self,
         train: &SpikeTrain,
@@ -187,7 +196,11 @@ impl Layer {
         r: Reward,
         obs: &mut O,
     ) -> Outcome {
-        self.run(train, p, Learn::Reward(r), obs)
+        let learn = match p.rule {
+            Rule::Delayed => Learn::Delayed(r),
+            _ => Learn::Reward(r),
+        };
+        self.run(train, p, learn, obs)
     }
 
     fn run<O: Observer>(
@@ -200,6 +213,7 @@ impl Layer {
         assert_eq!(train.n_inputs(), self.n_in);
         let lif = &p.lif;
         let triplet = learn == Learn::On && p.rule == Rule::Triplet;
+        let delayed = matches!(learn, Learn::Delayed(_));
         // a blank image gives no drive; keep the threshold above rest
         let base = (train.max_simultaneous() as f32 / p.threshold_div).max(1.0);
         for (th, &theta) in self.thresholds.iter_mut().zip(&self.theta) {
@@ -212,6 +226,8 @@ impl Layer {
         let mut spikes = vec![0u32; self.n_out];
         let mut input_spikes = 0u32;
         let mut winner = None;
+        let mut decided = 0;
+        self.spikes.clear();
         // sign and size of the pair rule for the winner, set by a reward
         let mut scale = 1.0;
         let mut fired = std::mem::take(&mut self.fired);
@@ -236,6 +252,7 @@ impl Layer {
             if winner.is_none() {
                 winner = self.pick_winner(ti);
                 if let Some(w) = winner {
+                    decided = t;
                     for (j, n) in self.neurons.iter_mut().enumerate() {
                         if j != w {
                             n.inhibit(lif);
@@ -262,6 +279,10 @@ impl Layer {
                 if learn == Learn::Off {
                     continue;
                 }
+                if delayed {
+                    self.spikes.push((j as u16, t as u16));
+                    continue;
+                }
                 let (quant, rng) = (&self.quant, &mut self.qrng);
                 let round = |w: f32| match quant {
                     Some(q) => q.snap(w, rng),
@@ -274,7 +295,7 @@ impl Layer {
                     self.stdp.post_spike_rounded(row, train, t, scale, round);
                 }
             }
-            if learn != Learn::Off {
+            if learn != Learn::Off && !delayed {
                 for &j in &fired {
                     self.sync(j as usize);
                 }
@@ -291,8 +312,11 @@ impl Layer {
         }
         self.fired = fired;
 
+        if let Learn::Delayed(r) = learn {
+            self.release(train, p, r, winner, decided);
+        }
         if learn != Learn::Off {
-            if let Some(w) = winner {
+            if let Some(w) = winner.filter(|_| !delayed) {
                 let row = &mut self.weights[w * self.n_in..(w + 1) * self.n_in];
                 // a punished winner keeps its silent inputs and loses weight
                 if scale > 0.0 {
@@ -320,6 +344,58 @@ impl Layer {
         }
     }
 
+    // hands the presentation to the dopamine and applies the weight changes it
+    // releases; rows that took more reward than punishment are renormalised
+    fn release(
+        &mut self,
+        train: &SpikeTrain,
+        p: &Params,
+        r: Reward,
+        winner: Option<usize>,
+        decided: usize,
+    ) {
+        let decision = winner.map(|w| Decision {
+            row: w,
+            step: decided,
+            amount: if w % r.classes == r.label as usize {
+                r.reward
+            } else {
+                -r.punish
+            },
+        });
+        let (n_in, n_out) = (self.n_in, self.n_out);
+        let (weights, by_input) = (&mut self.weights, &mut self.by_input);
+        let (quant, rng) = (&self.quant, &mut self.qrng);
+        // in the units of the kernel, so a full reward takes silent_penalty off
+        let silent = p.silent_penalty / (p.stdp.sigma * p.dopamine.gain.max(f32::MIN_POSITIVE));
+        let spikes = &self.spikes;
+        self.dopamine.present(
+            &self.stdp,
+            train,
+            spikes,
+            decision,
+            silent,
+            |j, dw, rewarded| {
+                let row = &mut weights[j * n_in..(j + 1) * n_in];
+                let (lo, hi, rate) = (p.stdp.w_min, p.stdp.w_max, p.stdp.sigma);
+                for (w, &d) in row.iter_mut().zip(dw) {
+                    // stdp::bounded with a select for the branch, so it vectorises
+                    let room = if d > 0.0 { hi - *w } else { *w - lo };
+                    *w += rate * d * room;
+                }
+                if rewarded {
+                    normalize(row, p.w_norm, p.stdp.w_max);
+                }
+                if let Some(q) = quant {
+                    q.apply(row, rng);
+                }
+                for (i, &w) in row.iter().enumerate() {
+                    by_input[i * n_out + j] = w;
+                }
+            },
+        );
+    }
+
     // triplet depression: inputs spiking at `t` onto neurons that fired before
     fn depress_on_pre(&mut self, active: &[u16], t: usize, p: &Params) {
         for j in 0..self.n_out {
@@ -330,7 +406,7 @@ impl Layer {
             for &i in active {
                 let i = i as usize;
                 let w = &mut self.weights[j * self.n_in + i];
-                let mut v = crate::stdp::bounded(*w, dw, &p.stdp);
+                let mut v = bounded(*w, dw, &p.stdp);
                 if let Some(q) = &self.quant {
                     v = q.snap(v, &mut self.qrng);
                 }

@@ -175,9 +175,10 @@ impl Trainer {
     }
 
     pub fn with_layer(params: Params, layer: Layer, classes: usize, rng: Rng) -> Self {
-        let labels = match params.rule {
-            Rule::Reward => Labels::fixed(classes),
-            _ => Labels::new(layer.n_out, classes),
+        let labels = if params.rule.rewarded() {
+            Labels::fixed(classes)
+        } else {
+            Labels::new(layer.n_out, classes)
         };
         Self {
             params,
@@ -235,7 +236,7 @@ impl Trainer {
             learn: info.learn,
             track: tracking.then_some(&mut self.track),
         };
-        let outcome = if info.learn && p.rule == Rule::Reward {
+        let outcome = if info.learn && p.rule.rewarded() {
             // as in Mozafari et al., rewards scale with the miss rate and
             // punishments with the hit rate, so learning settles as answers improve
             let hit = self.recent.rate();
@@ -245,7 +246,11 @@ impl Trainer {
                 reward: 1.0 - hit,
                 punish: hit,
             };
-            self.layer.present_rewarded(&self.train, p, r, &mut hook)
+            let out = self.layer.present_rewarded(&self.train, p, r, &mut hook);
+            if p.rule == Rule::Delayed {
+                self.pacer.ticks(p.dopamine.gap as u64, ctl);
+            }
+            out
         } else {
             self.layer.present(&self.train, p, info.learn, &mut hook)
         };
@@ -460,6 +465,27 @@ mod tests {
             let acc = r[0].test_accuracy.unwrap();
             assert!(acc > 0.4, "{rule}: test accuracy {acc}");
         }
+    }
+
+    #[test]
+    fn delayed_reward_needs_trials_apart() {
+        // rewards 1-3 s late find the right tags only if the next image waits
+        let train = synthetic(2000, 1);
+        let test = synthetic(300, 2);
+        let acc = |gap| {
+            let mut p = Params {
+                rule: Rule::Delayed,
+                ..Params::default()
+            };
+            p.dopamine.gap = gap;
+            let mut t = Trainer::new(p, 784, 40, 10, 7);
+            let r = t.fit(&train, Some(&test), 1, &mut (), &Control::new(0));
+            assert_eq!(t.layer.dopamine.images, 2000);
+            r[0].test_accuracy.unwrap()
+        };
+        let (apart, back_to_back) = (acc(2800), acc(0));
+        assert!(apart > 0.25, "{apart}");
+        assert!(back_to_back < apart - 0.1, "{back_to_back} vs {apart}");
     }
 
     #[test]
