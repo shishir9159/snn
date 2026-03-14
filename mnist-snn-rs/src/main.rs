@@ -1,4 +1,5 @@
 use mnist_snn::fixed::{self, Fixed};
+use mnist_snn::params::Rule;
 use mnist_snn::tap::Tap;
 use mnist_snn::train::Trainer;
 use mnist_snn::{Layer, Params};
@@ -184,7 +185,7 @@ fn model_params(p: &Params) -> Vec<Param<'static>> {
     } else {
         format!("÷{} ", p.threshold_div)
     };
-    vec![
+    let mut rows = vec![
         Param::text("Threshold", div + "adaptive"),
         Param::num("Leak", p.lif.leak, "/ms"),
         Param::num("Refractory", p.lif.t_ref as f32, "ms"),
@@ -192,7 +193,20 @@ fn model_params(p: &Params) -> Vec<Param<'static>> {
         Param::text("Weights", weight_range(p)),
         Param::num("Learning rate", p.stdp.sigma, ""),
         Param::text("Rule", p.rule.to_string()),
-    ]
+    ];
+    if p.rule == Rule::Delayed {
+        let d = &p.dopamine;
+        rows.extend([
+            Param::num("Tags τ", d.tau_c, "ms"),
+            Param::num("Dopamine τ", d.tau_d, "ms"),
+            Param::text(
+                "Reward after",
+                format!("{}–{} ms", d.delay, d.delay + d.jitter),
+            ),
+            Param::num("Trial gap", d.gap as f32, "ms"),
+        ]);
+    }
+    rows
 }
 
 fn run(a: Args, o: Opts) -> Result<(), String> {
@@ -378,6 +392,15 @@ mod tests {
         };
         assert_eq!(train(&[]), train(&[]), "same constants, same run");
         assert_ne!(train(&[]), train(&["--set", "sigma=0.02"]));
+    }
+
+    #[test]
+    fn the_delayed_rule_shows_its_constants() {
+        let (_, o) = parse(&["--set", "rule=delayed", "--set", "reward_jitter=500"]).unwrap();
+        let rows = model_params(&o.params);
+        let row = rows.iter().find(|r| r.name == "Reward after").unwrap();
+        assert_eq!(row.text, "1000–1500 ms");
+        assert_eq!(model_params(&Params::default()).len() + 4, rows.len());
     }
 
     #[test]

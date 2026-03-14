@@ -1,8 +1,9 @@
 //! Binary records streamed to the dashboard. Little endian. Each record is
 //! `kind: u8, len: u32, payload`; one WebSocket message carries several.
 //!
-//! Kinds below 16 are shared by every model, except 3, 4, 5 and 9 which belong
-//! to the winner-take-all model (mnist-snn-rs). Other models use 16 and up.
+//! Kinds below 16 are shared by every model, except 3, 4, 5, 9, 14 and 15
+//! which belong to the winner-take-all model (mnist-snn-rs). Other models use
+//! 16 and up.
 
 use snn_core::{Confusion, Costs, EpochResult, ImageInfo, PerImage};
 

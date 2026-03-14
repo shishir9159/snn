@@ -1,11 +1,13 @@
 //! Trainer-side encoder: turns training events into packets on the hub.
 
+use crate::dopamine::Dopamine;
 use crate::layer::{Layer, Step};
 use crate::train::{ImageResult, Labels, Monitor};
 use snn_core::encode::SpikeTrain;
 use snn_core::{EpochResult, ImageInfo};
 use snn_live::frame::Buf;
 use snn_live::{Hub, Stream};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,8 +15,87 @@ pub const STEPS: u8 = 3;
 pub const RESULT: u8 = 4;
 pub const WEIGHTS: u8 = 5;
 pub const THRESH: u8 = 9;
+/// The delayed rule's recent trials, rewards and dopamine.
+pub const DOPAMINE: u8 = 14;
+/// The delayed rule's tags on each row that holds some.
+pub const TAGS: u8 = 15;
 
 const WEIGHTS_GAP: Duration = Duration::from_millis(100);
+/// Trials the dopamine timeline is told about; at 0.2 s each they still
+/// cover rewards 3 s late.
+const TRIALS: usize = 48;
+
+/// One training presentation under the delayed rule, as the timeline draws it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Trial {
+    pub image: u64,
+    /// training time before its first step
+    pub start: u64,
+    pub label: u8,
+    pub winner: Option<usize>,
+    pub correct: bool,
+    /// step it answered at, 0 for no answer, and the reward that earned
+    pub decided: usize,
+    pub amount: f32,
+    /// training time the reward arrives at
+    pub at: u64,
+    /// size of its tags after its last step
+    pub tagged: f32,
+    /// share of all tags the answering row held as the reward arrived; NaN
+    /// while it is on its way
+    pub credit: f32,
+}
+
+/// The clock, the constants and the dopamine now, then the recent trials.
+pub fn dopamine(b: &mut Buf, d: &Dopamine, steps: usize, trials: &VecDeque<Trial>) {
+    let p = d.params();
+    b.begin(DOPAMINE);
+    b.f64(d.clock as f64);
+    b.u16(steps as u16);
+    b.u32(p.gap);
+    b.u32(p.delay);
+    b.u32(p.jitter);
+    b.f32(p.tau_c);
+    b.f32(p.tau_d);
+    b.f32(p.gain);
+    b.f32(d.level);
+    b.u16(d.live().len() as u16);
+    b.u8(trials.len() as u8);
+    for t in trials {
+        b.f64(t.start as f64);
+        b.u8(t.label);
+        b.i16(t.winner.map_or(-1, |w| w as i16));
+        b.u8(t.correct as u8);
+        b.u16(t.decided as u16);
+        b.f32(t.amount);
+        b.f64(t.at as f64);
+        b.f32(t.tagged);
+        b.f32(t.credit);
+    }
+    b.end();
+}
+
+/// Per row holding tags: its LTP less its LTD tags as bytes over +-scale, the
+/// size of its tags and the steps since its last.
+pub fn tags(b: &mut Buf, d: &Dopamine, n_in: usize) {
+    b.begin(TAGS);
+    b.u16(d.live().len() as u16);
+    b.u16(n_in as u16);
+    for &j in d.live() {
+        let (plus, minus) = d.tags(j);
+        let net = plus.iter().zip(minus).map(|(p, m)| p - m);
+        let scale = net.clone().fold(f32::MIN_POSITIVE, |s, v| s.max(v.abs()));
+        let (size, age) = d.trace(j);
+        b.u16(j as u16);
+        b.f32(scale);
+        b.f32(size);
+        b.f32(age as f32);
+        for v in net {
+            b.u8((v / scale * 127.0).round() as i8 as u8);
+        }
+    }
+    b.end();
+}
 
 /// One step inside an open STEPS record.
 pub fn step(b: &mut Buf, active: &[u16], fired: &[u16], potentials: &[f32], winner: Option<usize>) {
@@ -88,9 +169,15 @@ pub struct Tap {
     s: Stream,
     w_range: (f32, f32),
     last_weights: Instant,
-    /// latest encoded WEIGHTS record
+    /// latest encoded WEIGHTS record, and the delayed rule's TAGS and DOPAMINE
     weights_rec: Vec<u8>,
+    tags_rec: Vec<u8>,
+    dopamine_rec: Vec<u8>,
     potentials: Vec<f32>,
+    /// the delayed rule's latest trials, and the presentations counted so far
+    trials: VecDeque<Trial>,
+    seen: u64,
+    steps: usize,
 }
 
 impl Tap {
@@ -100,8 +187,48 @@ impl Tap {
             w_range: (w_min, w_max),
             last_weights: Instant::now() - Duration::from_secs(1),
             weights_rec: Vec::new(),
+            tags_rec: Vec::new(),
+            dopamine_rec: Vec::new(),
             potentials: Vec::new(),
+            trials: VecDeque::new(),
+            seen: 0,
+            steps: 0,
         }
+    }
+
+    // a presentation of the delayed rule: its trial, and the credit of the
+    // rewards that arrived during it
+    fn record_trial(&mut self, r: &ImageResult, d: &Dopamine) {
+        self.seen = d.images;
+        let last = &d.last;
+        self.s.sim_steps += d.params().gap as u64;
+        self.steps = last.steps;
+        if self.trials.len() == TRIALS {
+            self.trials.pop_front();
+        }
+        self.trials.push_back(Trial {
+            image: last.image,
+            start: last.start,
+            label: r.info.label,
+            winner: r.outcome.winner,
+            correct: r.correct,
+            decided: last.sent.map_or(0, |p| (p.sent - last.start) as usize),
+            amount: last.sent.map_or(0.0, |p| p.amount),
+            at: last.sent.map_or(0, |p| p.at),
+            tagged: last.tagged,
+            credit: f32::NAN,
+        });
+        // a reward can land in its own trial's gap
+        for (puff, credit) in &last.arrived {
+            if let Some(t) = self.trials.iter_mut().find(|t| t.image == puff.image) {
+                t.credit = *credit;
+            }
+        }
+    }
+
+    // what a joining viewer starts from
+    fn snapshot(&self) -> Vec<u8> {
+        [&self.weights_rec[..], &self.tags_rec, &self.dopamine_rec].concat()
     }
 
     fn encode_weights(&mut self, layer: &Layer, labels: &Labels) {
@@ -118,6 +245,12 @@ impl Tap {
         };
         weights(&mut b, &w);
         self.weights_rec = b.take();
+        if !self.trials.is_empty() {
+            tags(&mut b, &layer.dopamine, layer.n_in);
+            self.tags_rec = b.take();
+            dopamine(&mut b, &layer.dopamine, self.steps, &self.trials);
+            self.dopamine_rec = b.take();
+        }
     }
 }
 
@@ -145,6 +278,9 @@ impl Monitor for Tap {
     }
 
     fn image_end(&mut self, r: &ImageResult, layer: &Layer, labels: &Labels) {
+        if layer.dopamine.images != self.seen {
+            self.record_trial(r, &layer.dopamine);
+        }
         self.s.end_image(&r.info, r.running_accuracy, r.activity);
         let viewers = self.s.viewers();
         let resume_due = self.s.resume_due();
@@ -153,7 +289,7 @@ impl Monitor for Tap {
             self.encode_weights(layer, labels);
         }
         if resume_due {
-            self.s.refresh_resume(&self.weights_rec);
+            self.s.refresh_resume(&self.snapshot());
         }
         if !viewers {
             return;
@@ -174,10 +310,14 @@ impl Monitor for Tap {
                 labels: &assigned,
             };
             result(&mut self.s.buf, &res);
+            if r.info.learn && !self.trials.is_empty() {
+                dopamine(&mut self.s.buf, &layer.dopamine, self.steps, &self.trials);
+            }
         }
         if send_weights {
             self.s.close_steps();
             self.s.buf.raw(&self.weights_rec);
+            self.s.buf.raw(&self.tags_rec);
             self.last_weights = Instant::now();
         }
         if streaming || send_weights || self.s.flush_due() {
@@ -186,7 +326,7 @@ impl Monitor for Tap {
     }
 
     fn epoch_end(&mut self, e: &EpochResult) {
-        self.s.epoch_end(e, &self.weights_rec);
+        self.s.epoch_end(e, &self.snapshot());
     }
 }
 
@@ -251,6 +391,50 @@ mod tests {
         let intro: Vec<u8> = v.intro().iter().flat_map(|p| kinds(p)).collect();
         let want = [WEIGHTS, frame::HISTORY, frame::EPOCH, frame::PROGRESS];
         assert_eq!(intro, want);
+    }
+
+    #[test]
+    fn the_delayed_rule_streams_its_trials_and_tags() {
+        let hub = Arc::new(Hub::new());
+        let mut v = hub.join();
+        let mut tap = Tap::new(hub.clone(), 0.0, 2.0);
+        let data = synthetic(4, 1);
+        let mut p = Params {
+            rule: crate::params::Rule::Delayed,
+            ..Params::default()
+        };
+        // rewards land within the next trial
+        p.dopamine.delay = 300;
+        p.dopamine.jitter = 0;
+        p.dopamine.gap = 100;
+        let mut t = Trainer::new(p, 784, 4, 10, 1);
+        t.fit(&data, None, 1, &mut tap, &Control::new(0));
+        assert_eq!(tap.s.sim_steps, 4 * 300, "steps and gaps");
+        assert_eq!(tap.trials.len(), 4);
+        let first = tap.trials[0];
+        assert_eq!(first.start, 0);
+        if first.winner.is_some() {
+            assert!(!first.credit.is_nan() && first.at == first.decided as u64 + 300);
+        }
+        let last = tap.trials[3];
+        assert!(last.credit.is_nan(), "still on its way");
+        let packets = v.poll(Duration::ZERO);
+        let recs: Vec<(u8, Vec<u8>)> = packets
+            .iter()
+            .flat_map(|p| records(p).into_iter().map(|(k, b)| (k, b.to_vec())))
+            .collect();
+        let count = |kind| recs.iter().filter(|r| r.0 == kind).count();
+        assert!(count(DOPAMINE) >= 1 && count(DOPAMINE) <= count(RESULT));
+        let d = &recs.iter().rev().find(|r| r.0 == DOPAMINE).unwrap().1;
+        let n = d[40] as usize;
+        assert_eq!(d.len(), 41 + 34 * n);
+        assert_eq!(
+            f64::from_le_bytes(d[..8].try_into().unwrap()),
+            (n * 300) as f64
+        );
+        let tags_rec = &recs.iter().find(|r| r.0 == TAGS).unwrap().1;
+        let rows = u16::from_le_bytes([tags_rec[0], tags_rec[1]]) as usize;
+        assert_eq!(tags_rec.len(), 4 + rows * (14 + 784));
     }
 
     #[test]
