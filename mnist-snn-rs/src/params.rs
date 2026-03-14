@@ -12,6 +12,10 @@ pub enum Rule {
     Pair,
     /// minimal triplet STDP (Pfister & Gerstner 2006)
     Triplet,
+    /// voltage-based STDP: depression by the filtered membrane voltage at
+    /// each pre spike, potentiation while depolarised past θ+ (Clopath et
+    /// al. 2010)
+    Voltage,
     /// pair STDP gated by reward: neuron j answers class j mod classes, a right
     /// first spike is rewarded and a wrong one punished (Mozafari et al. 2018)
     Reward,
@@ -34,9 +38,12 @@ impl FromStr for Rule {
         match s {
             "pair" => Ok(Rule::Pair),
             "triplet" => Ok(Rule::Triplet),
+            "voltage" => Ok(Rule::Voltage),
             "reward" => Ok(Rule::Reward),
             "delayed" => Ok(Rule::Delayed),
-            _ => Err(format!("{s} is not pair, triplet, reward or delayed")),
+            _ => Err(format!(
+                "{s} is not pair, triplet, voltage, reward or delayed"
+            )),
         }
     }
 }
@@ -46,6 +53,7 @@ impl fmt::Display for Rule {
         let name = match self {
             Rule::Pair => "pair",
             Rule::Triplet => "triplet",
+            Rule::Voltage => "voltage",
             Rule::Reward => "reward",
             Rule::Delayed => "delayed",
         };
@@ -110,6 +118,37 @@ pub struct DopamineParams {
     pub gap: u32,
 }
 
+/// Voltage-based STDP. Voltages are in units of the neuron's threshold above
+/// rest, times in steps of 1 ms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VoltageParams {
+    /// time constants of ū−, which LTD reads, of ū+, which gates LTP, and of
+    /// the pre trace x̄
+    pub tau_minus: f32,
+    pub tau_plus: f32,
+    pub tau_x: f32,
+    /// LTD while ū− is above θ−; LTP while u is above θ+ and ū+ above θ−.
+    /// The paper puts θ− at rest. Here every loser climbs toward threshold
+    /// before the winner fires, so at rest a 400-neuron layer depresses
+    /// hundreds of them per image until their rows drain (4.7% test against
+    /// 85.2% at 0.4; 65.5% against 71.5% at 40 outputs). At 0.4 LTD takes
+    /// the winner after its spikes and its closest rivals
+    pub theta_minus: f32,
+    pub theta_plus: f32,
+    /// what the rule sees on the step a neuron fires: the LIF resets at once,
+    /// the paper's neuron is held about 5 thresholds above rest for 2 ms
+    pub v_spike: f32,
+    pub a_ltp: f32,
+    pub a_ltd: f32,
+    /// LTD scales with (mean depolarisation / u_ref)², the mean taken over
+    /// tau_bar; 0 keeps a_ltd fixed. Off by default: theta and the weight
+    /// norm already hold activity, and on top of them it drains rows in big
+    /// layers (u_ref 0.05: 72.2% against 71.5% at 40 outputs, 41.4% against
+    /// 85.2% at 400)
+    pub u_ref: f32,
+    pub tau_bar: f32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Params {
     /// steps an image is presented for
@@ -141,6 +180,7 @@ pub struct Params {
     pub stochastic_rounding: bool,
     pub rule: Rule,
     pub dopamine: DopamineParams,
+    pub voltage: VoltageParams,
 }
 
 impl Default for LifParams {
@@ -194,6 +234,26 @@ impl Default for DopamineParams {
     }
 }
 
+impl Default for VoltageParams {
+    fn default() -> Self {
+        // time constants from the paper's visual cortex fit; θ+ at threshold
+        // so only spikes potentiate, as the paper's sits just above its own;
+        // θ− and amplitudes tuned on MNIST from 40 to 400 outputs
+        Self {
+            tau_minus: 10.0,
+            tau_plus: 7.0,
+            tau_x: 15.0,
+            theta_minus: 0.4,
+            theta_plus: 1.0,
+            v_spike: 5.0,
+            a_ltp: 0.2,
+            a_ltd: 0.05,
+            u_ref: 0.0,
+            tau_bar: 1000.0,
+        }
+    }
+}
+
 impl Default for Params {
     fn default() -> Self {
         Self {
@@ -212,6 +272,7 @@ impl Default for Params {
             stochastic_rounding: true,
             rule: Rule::Pair,
             dopamine: DopamineParams::default(),
+            voltage: VoltageParams::default(),
         }
     }
 }
@@ -251,6 +312,16 @@ snn_core::tunable!(Params {
     "reward_jitter" => dopamine.jitter,
     "image_gap" => dopamine.gap,
     "dopamine_gain" => dopamine.gain,
+    "tau_u_minus" => voltage.tau_minus,
+    "tau_u_plus" => voltage.tau_plus,
+    "tau_x" => voltage.tau_x,
+    "theta_ltd" => voltage.theta_minus,
+    "theta_ltp" => voltage.theta_plus,
+    "v_spike" => voltage.v_spike,
+    "a_ltp" => voltage.a_ltp,
+    "a_ltd" => voltage.a_ltd,
+    "u_ref" => voltage.u_ref,
+    "tau_u_bar" => voltage.tau_bar,
     "pot_min" => encode.pot_min,
     "pot_max" => encode.pot_max,
     "freq_min" => encode.freq_min,
@@ -292,6 +363,10 @@ mod tests {
         p.set("reward_delay", "300").unwrap();
         assert_eq!((p.rule, p.dopamine.delay), (Rule::Delayed, 300));
         assert!(p.rule.rewarded() && !Rule::Triplet.rewarded());
+        p.set("rule", "voltage").unwrap();
+        p.set("theta_ltp", "0.8").unwrap();
+        assert_eq!((p.rule, p.voltage.theta_plus), (Rule::Voltage, 0.8));
+        assert!(!p.rule.rewarded());
         assert!(p.set("rule", "hebb").is_err());
         assert_eq!(Rule::Triplet.to_string().parse(), Ok(Rule::Triplet));
         assert!(p.set("leek", "1").is_err());

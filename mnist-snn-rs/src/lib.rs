@@ -9,6 +9,7 @@ pub mod params;
 pub mod stdp;
 pub mod tap;
 pub mod train;
+pub mod voltage;
 
 pub use fixed::Fixed;
 pub use layer::{Layer, Observer, Outcome, Step};

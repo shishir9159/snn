@@ -26,8 +26,13 @@ fn main() {
         ..p.clone()
     };
     let mut delayed = layer.clone();
+    let voltage_p = Params {
+        rule: Rule::Voltage,
+        ..p.clone()
+    };
+    let mut voltage = layer.clone();
     let (mut pot, mut train) = (Vec::new(), SpikeTrain::new());
-    let mut t = [Duration::ZERO; 5];
+    let mut t = [Duration::ZERO; 6];
     for i in 0..data.len() {
         let t0 = Instant::now();
         encode::receptive_field(data.image(i), 28, 28, &mut pot);
@@ -49,11 +54,14 @@ fn main() {
         };
         delayed.present_rewarded(&train, &delayed_p, r, &mut ());
         let t6 = Instant::now();
+        voltage.present(&train, &voltage_p, true, &mut ());
+        let t7 = Instant::now();
         t[0] += t1 - t0;
         t[1] += t2 - t1;
         t[2] += t4 - t3;
         t[3] += t5 - t4;
         t[4] += t6 - t5;
+        t[5] += t7 - t6;
     }
     let names = [
         "receptive field",
@@ -61,6 +69,7 @@ fn main() {
         "present",
         "present + learning",
         "delayed reward",
+        "voltage stdp",
     ];
     for (name, d) in names.iter().zip(t) {
         let us = d.as_secs_f64() * 1e6 / data.len() as f64;

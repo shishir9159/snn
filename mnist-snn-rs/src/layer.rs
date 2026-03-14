@@ -4,6 +4,7 @@ use crate::dopamine::{Decision, Dopamine};
 use crate::neuron::Neuron;
 use crate::params::{Params, Rule};
 use crate::stdp::{bounded, PostTrace, Stdp, Triplet};
+use crate::voltage::Voltage;
 use snn_core::encode::SpikeTrain;
 use snn_core::rng::Rng;
 use snn_core::weights;
@@ -95,6 +96,8 @@ pub struct Layer {
     pub dopamine: Dopamine,
     /// (neuron, step) of each output spike, which the delayed rule tags from
     spikes: Vec<(u16, u16)>,
+    /// traces and the last changes of the voltage rule
+    pub voltage: Voltage,
     /// the weight grid, when the weights are stored in fewer bits
     quant: Option<Quantizer>,
     qrng: Rng,
@@ -144,6 +147,7 @@ impl Layer {
             fired: Vec::with_capacity(n_out),
             dopamine: Dopamine::new(&p.dopamine, n_in, n_out),
             spikes: Vec::new(),
+            voltage: Voltage::new(&p.voltage, n_out),
             quant,
             qrng: Rng::new(0x51ab),
         }
@@ -172,7 +176,8 @@ impl Layer {
     }
 
     /// Runs one image through the layer. With `learn`, applies the pair or
-    /// triplet rule on every output spike and updates homeostasis afterwards.
+    /// triplet rule on every output spike, or the voltage rule once the image
+    /// is over, and updates homeostasis afterwards.
     pub fn present<O: Observer>(
         &mut self,
         train: &SpikeTrain,
@@ -214,6 +219,9 @@ impl Layer {
         let lif = &p.lif;
         let triplet = learn == Learn::On && p.rule == Rule::Triplet;
         let delayed = matches!(learn, Learn::Delayed(_));
+        let voltage = learn == Learn::On && p.rule == Rule::Voltage;
+        // rules that change the weights once the presentation is over
+        let later = delayed || voltage;
         // a blank image gives no drive; keep the threshold above rest
         let base = (train.max_simultaneous() as f32 / p.threshold_div).max(1.0);
         for (th, &theta) in self.thresholds.iter_mut().zip(&self.theta) {
@@ -223,6 +231,10 @@ impl Layer {
             n.reset(lif);
         }
         self.post.fill(PostTrace::default());
+        if voltage {
+            self.voltage
+                .begin(&self.thresholds, lif.rest, train.steps());
+        }
         let mut spikes = vec![0u32; self.n_out];
         let mut input_spikes = 0u32;
         let mut winner = None;
@@ -276,7 +288,7 @@ impl Layer {
                 }
                 fired.push(j as u16);
                 spikes[j] += 1;
-                if learn == Learn::Off {
+                if learn == Learn::Off || voltage {
                     continue;
                 }
                 if delayed {
@@ -295,10 +307,13 @@ impl Layer {
                     self.stdp.post_spike_rounded(row, train, t, scale, round);
                 }
             }
-            if learn != Learn::Off && !delayed {
+            if learn != Learn::Off && !later {
                 for &j in &fired {
                     self.sync(j as usize);
                 }
+            }
+            if voltage {
+                self.voltage.step(t, &self.neurons, &fired, lif.rest);
             }
 
             obs.step(&Step {
@@ -314,6 +329,23 @@ impl Layer {
 
         if let Learn::Delayed(r) = learn {
             self.release(train, p, r, winner, decided);
+        }
+        if voltage {
+            let (w, by_input) = (&mut self.weights, &mut self.by_input);
+            self.voltage.learn(train, w, by_input, &p.stdp);
+            // only the winner is renormalised, as under the other rules; it
+            // is snapped below with its other changes
+            if let Some(q) = self.quant {
+                for j in 0..self.n_out {
+                    if winner != Some(j) && self.voltage.last.touched(j) {
+                        q.apply(
+                            &mut self.weights[j * self.n_in..][..self.n_in],
+                            &mut self.qrng,
+                        );
+                        self.sync(j);
+                    }
+                }
+            }
         }
         if learn != Learn::Off {
             if let Some(w) = winner.filter(|_| !delayed) {
@@ -576,6 +608,36 @@ mod tests {
                     assert_eq!(l.by_input[i * 2 + j], l.row(j)[i], "input-major copy");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_voltage_rule_separates_two_patterns_on_the_grid() {
+        for bits in [0, 5] {
+            let p = Params {
+                rule: Rule::Voltage,
+                weight_bits: bits,
+                ..Params::default()
+            };
+            let mut l = Layer::new(784, 3, &p, &mut Rng::new(3));
+            let (v, h) = (encode(&bar(true), &p), encode(&bar(false), &p));
+            for _ in 0..30 {
+                l.present(&v, &p, true, &mut ());
+                l.present(&h, &p, true, &mut ());
+            }
+            let wv = l.present(&v, &p, false, &mut ()).winner;
+            let wh = l.present(&h, &p, false, &mut ()).winner;
+            assert!(wv.is_some() && wh.is_some() && wv != wh, "{bits} bits");
+            if bits > 0 {
+                assert!(on_grid(l.weights(), bits, &p));
+            }
+            for j in 0..3 {
+                for i in 0..784 {
+                    assert_eq!(l.by_input[i * 3 + j], l.row(j)[i], "input-major copy");
+                }
+            }
+            let last = &l.voltage.last;
+            assert!(last.ltp.iter().sum::<f32>() > 0.0 && !last.inputs.is_empty());
         }
     }
 

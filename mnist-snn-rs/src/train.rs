@@ -455,7 +455,7 @@ mod tests {
     fn every_rule_learns_synthetic_digits() {
         let train = synthetic(2000, 1);
         let test = synthetic(300, 2);
-        for rule in [Rule::Triplet, Rule::Reward] {
+        for rule in [Rule::Triplet, Rule::Voltage, Rule::Reward] {
             let p = Params {
                 rule,
                 ..Params::default()
