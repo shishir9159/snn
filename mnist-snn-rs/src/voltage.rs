@@ -62,6 +62,8 @@ pub struct Voltage {
     pub bar: Vec<f32>,
     /// LTD amplitude of each neuron this presentation
     pub a_ltd: Vec<f32>,
+    /// resting potential, and 1 / (threshold - rest) per neuron
+    pub rest: f32,
     inv: Vec<f32>,
     u: Vec<f32>,
     /// per step, then neuron: LTD per pre spike, and the post factor of LTP,
@@ -71,6 +73,8 @@ pub struct Voltage {
     steps: usize,
     pot: Vec<f32>,
     dep: Vec<f32>,
+    /// learning presentations so far
+    pub images: u64,
     pub last: Changes,
 }
 
@@ -88,6 +92,7 @@ impl Voltage {
             plus: vec![0.0; n_out],
             bar: vec![p.u_ref; n_out],
             a_ltd: vec![p.a_ltd; n_out],
+            rest: 0.0,
             inv: vec![1.0; n_out],
             u: vec![0.0; n_out],
             ltd: Vec::new(),
@@ -95,6 +100,7 @@ impl Voltage {
             steps: 0,
             pot: vec![0.0; n_out],
             dep: vec![0.0; n_out],
+            images: 0,
             last: Changes::default(),
         }
     }
@@ -110,6 +116,7 @@ impl Voltage {
         let n = self.n_out;
         self.minus.fill(0.0);
         self.plus.fill(0.0);
+        self.rest = rest;
         for (inv, &th) in self.inv.iter_mut().zip(thresholds) {
             *inv = 1.0 / (th - rest).max(f32::MIN_POSITIVE);
         }
@@ -124,10 +131,10 @@ impl Voltage {
 
     /// Step `t` of the presentation, from each neuron's potential after it
     /// and the neurons that `fired`.
-    pub fn step(&mut self, t: usize, neurons: &[Neuron], fired: &[u16], rest: f32) {
+    pub fn step(&mut self, t: usize, neurons: &[Neuron], fired: &[u16]) {
         let n = self.n_out;
         for ((u, nrn), &inv) in self.u.iter_mut().zip(neurons).zip(&self.inv) {
-            *u = (nrn.p - rest) * inv;
+            *u = (nrn.p - self.rest) * inv;
         }
         for &j in fired {
             self.u[j as usize] = self.p.v_spike;
@@ -213,6 +220,7 @@ impl Voltage {
                 }
             }
         }
+        self.images += 1;
     }
 }
 
@@ -273,7 +281,7 @@ mod tests {
                     t_rest: -1,
                 })
                 .collect();
-            v.step(t, &neurons, &fired, 0.0);
+            v.step(t, &neurons, &fired);
         }
         v.learn(tr, w, &mut by_input, &StdpParams::default());
         for j in 0..n {

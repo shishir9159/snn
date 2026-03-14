@@ -3,6 +3,7 @@
 use crate::dopamine::Dopamine;
 use crate::layer::{Layer, Step};
 use crate::train::{ImageResult, Labels, Monitor};
+use crate::voltage::Voltage;
 use snn_core::encode::SpikeTrain;
 use snn_core::{EpochResult, ImageInfo};
 use snn_live::frame::Buf;
@@ -19,6 +20,8 @@ pub const THRESH: u8 = 9;
 pub const DOPAMINE: u8 = 14;
 /// The delayed rule's tags on each row that holds some.
 pub const TAGS: u8 = 15;
+/// The voltage rule's constants and what it changed in the last training image.
+pub const VOLTAGE: u8 = 51;
 
 const WEIGHTS_GAP: Duration = Duration::from_millis(100);
 /// Trials the dopamine timeline is told about; at 0.2 s each they still
@@ -97,6 +100,45 @@ pub fn tags(b: &mut Buf, d: &Dopamine, n_in: usize) {
     b.end();
 }
 
+/// The voltage rule's constants and resting potential; per neuron its LTD
+/// amplitude, mean depolarisation, the LTP and LTD it took and the largest
+/// change of a weight; then the inputs that spiked, and each one's change onto
+/// every neuron as bytes over +-that neuron's largest.
+pub fn voltage(b: &mut Buf, v: &Voltage) {
+    let (p, c) = (v.params(), &v.last);
+    let n = c.ltp.len();
+    let mut top = vec![f32::MIN_POSITIVE; n];
+    for row in c.dw.chunks_exact(n.max(1)) {
+        top.iter_mut()
+            .zip(row)
+            .for_each(|(t, d)| *t = t.max(d.abs()));
+    }
+    b.begin(VOLTAGE);
+    let consts = [
+        p.tau_minus,
+        p.tau_plus,
+        p.tau_x,
+        p.theta_minus,
+        p.theta_plus,
+    ];
+    let amps = [p.v_spike, p.a_ltp, p.a_ltd, p.u_ref, v.rest];
+    consts.iter().chain(&amps).for_each(|&x| b.f32(x));
+    b.u16(n as u16);
+    b.u16(c.inputs.len() as u16);
+    for (j, &t) in top.iter().enumerate() {
+        for x in [v.a_ltd[j], v.bar[j], c.ltp[j], c.ltd[j], t] {
+            b.f32(x);
+        }
+    }
+    c.inputs.iter().for_each(|&i| b.u16(i));
+    for row in c.dw.chunks_exact(n.max(1)) {
+        for (d, t) in row.iter().zip(&top) {
+            b.u8((d / t * 127.0).round() as i8 as u8);
+        }
+    }
+    b.end();
+}
+
 /// One step inside an open STEPS record.
 pub fn step(b: &mut Buf, active: &[u16], fired: &[u16], potentials: &[f32], winner: Option<usize>) {
     b.u16(active.len() as u16);
@@ -169,10 +211,14 @@ pub struct Tap {
     s: Stream,
     w_range: (f32, f32),
     last_weights: Instant,
-    /// latest encoded WEIGHTS record, and the delayed rule's TAGS and DOPAMINE
+    /// latest encoded WEIGHTS record, the delayed rule's TAGS and DOPAMINE,
+    /// and the voltage rule's VOLTAGE
     weights_rec: Vec<u8>,
     tags_rec: Vec<u8>,
     dopamine_rec: Vec<u8>,
+    voltage_rec: Vec<u8>,
+    /// presentations the voltage rule had learned from by the last image
+    learned: u64,
     potentials: Vec<f32>,
     /// the delayed rule's latest trials, and the presentations counted so far
     trials: VecDeque<Trial>,
@@ -189,6 +235,8 @@ impl Tap {
             weights_rec: Vec::new(),
             tags_rec: Vec::new(),
             dopamine_rec: Vec::new(),
+            voltage_rec: Vec::new(),
+            learned: 0,
             potentials: Vec::new(),
             trials: VecDeque::new(),
             seen: 0,
@@ -228,7 +276,13 @@ impl Tap {
 
     // what a joining viewer starts from
     fn snapshot(&self) -> Vec<u8> {
-        [&self.weights_rec[..], &self.tags_rec, &self.dopamine_rec].concat()
+        let (w, t, d, v) = (
+            &self.weights_rec,
+            &self.tags_rec,
+            &self.dopamine_rec,
+            &self.voltage_rec,
+        );
+        [&w[..], t, d, v].concat()
     }
 
     fn encode_weights(&mut self, layer: &Layer, labels: &Labels) {
@@ -281,12 +335,20 @@ impl Monitor for Tap {
         if layer.dopamine.images != self.seen {
             self.record_trial(r, &layer.dopamine);
         }
+        // the voltage rule learned from this image
+        let learned = layer.voltage.images != self.learned;
+        self.learned = layer.voltage.images;
         self.s.end_image(&r.info, r.running_accuracy, r.activity);
         let viewers = self.s.viewers();
         let resume_due = self.s.resume_due();
         let send_weights = viewers && self.last_weights.elapsed() >= WEIGHTS_GAP;
         if send_weights || resume_due {
             self.encode_weights(layer, labels);
+        }
+        if learned && (self.s.streaming() || resume_due) {
+            let mut b = Buf::new();
+            voltage(&mut b, &layer.voltage);
+            self.voltage_rec = b.take();
         }
         if resume_due {
             self.s.refresh_resume(&self.snapshot());
@@ -312,6 +374,9 @@ impl Monitor for Tap {
             result(&mut self.s.buf, &res);
             if r.info.learn && !self.trials.is_empty() {
                 dopamine(&mut self.s.buf, &layer.dopamine, self.steps, &self.trials);
+            }
+            if learned {
+                self.s.buf.raw(&self.voltage_rec);
             }
         }
         if send_weights {
@@ -435,6 +500,40 @@ mod tests {
         let tags_rec = &recs.iter().find(|r| r.0 == TAGS).unwrap().1;
         let rows = u16::from_le_bytes([tags_rec[0], tags_rec[1]]) as usize;
         assert_eq!(tags_rec.len(), 4 + rows * (14 + 784));
+    }
+
+    #[test]
+    fn the_voltage_rule_streams_what_it_changed() {
+        let hub = Arc::new(Hub::new());
+        let mut v = hub.join();
+        let mut tap = Tap::new(hub.clone(), 0.0, 2.0);
+        let data = synthetic(4, 1);
+        let p = Params {
+            rule: crate::params::Rule::Voltage,
+            ..Params::default()
+        };
+        let mut t = Trainer::new(p, 784, 4, 10, 1);
+        t.fit(&data, None, 1, &mut tap, &Control::new(0));
+        let recs: Vec<(u8, Vec<u8>)> = v
+            .poll(Duration::ZERO)
+            .iter()
+            .flat_map(|p| records(p).into_iter().map(|(k, b)| (k, b.to_vec())))
+            .collect();
+        let count = |kind| recs.iter().filter(|r| r.0 == kind).count();
+        assert!(count(VOLTAGE) >= 1 && count(VOLTAGE) == count(RESULT));
+        let d = &recs.iter().rev().find(|r| r.0 == VOLTAGE).unwrap().1;
+        let (n, inputs) = (
+            u16::from_le_bytes([d[40], d[41]]) as usize,
+            u16::from_le_bytes([d[42], d[43]]) as usize,
+        );
+        assert_eq!(n, 4);
+        assert!(inputs > 0 && inputs <= 784);
+        assert_eq!(d.len(), 44 + 20 * n + inputs * (2 + n));
+        let theta_minus = f32::from_le_bytes(d[12..16].try_into().unwrap());
+        assert_eq!(theta_minus, t.params.voltage.theta_minus);
+        // a late viewer starts from the last one too
+        let intro: Vec<u8> = hub.join().intro().iter().flat_map(|p| kinds(p)).collect();
+        assert!(intro.contains(&VOLTAGE));
     }
 
     #[test]

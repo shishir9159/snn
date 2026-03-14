@@ -3,7 +3,7 @@
 //!
 //! Kinds below 16 are shared by every model, except 3, 4, 5, 9, 14 and 15
 //! which belong to the winner-take-all model (mnist-snn-rs). Other models use
-//! 16 and up.
+//! 16 and up; the winner-take-all model also takes 51.
 
 use snn_core::{Confusion, Costs, EpochResult, ImageInfo, PerImage};
 

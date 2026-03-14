@@ -313,7 +313,7 @@ impl Layer {
                 }
             }
             if voltage {
-                self.voltage.step(t, &self.neurons, &fired, lif.rest);
+                self.voltage.step(t, &self.neurons, &fired);
             }
 
             obs.step(&Step {

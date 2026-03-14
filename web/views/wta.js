@@ -1,5 +1,5 @@
-// Winner-take-all view (mnist-snn-rs): records 3 STEPS, 4 RESULT, 5 WEIGHTS, 9 THRESH, and
-// 14 DOPAMINE, 15 TAGS under the delayed reward rule.
+// Winner-take-all view (mnist-snn-rs): records 3 STEPS, 4 RESULT, 5 WEIGHTS, 9 THRESH,
+// 14 DOPAMINE, 15 TAGS under the delayed reward rule and 51 VOLTAGE under the voltage rule.
 "use strict";
 {
   const probe = () => (S.pinned >= 0 ? S.pinned : S.winner >= 0 ? S.winner : Math.max(0, S.lastWinner));
@@ -486,6 +486,205 @@
     x.fillStyle = pa(0.55); x.fillText("a reward grows pale, shrinks orange", ox, oy + size + 30);
   }
 
+  // ---- voltage-based STDP: record 51 VOLTAGE -------------------------------------------------
+  // The rule reads each neuron's membrane voltage u, in units of its threshold. A pre spike
+  // depresses its synapse by how far ū− (a trace of u) sits above θ−; a spike potentiates each
+  // input by its trace x̄ times how depolarised the neuron was just before, ū+ above θ−. The
+  // traces are rebuilt here from the streamed potentials as voltage.rs builds them; the weight
+  // changes come from the record, sent once a training image is over.
+  const VS = { on: false, rec: null, images: 0, at: -1, winner: -1, label: -1, geom: null, bars: null, hover: -1 };
+  const nName = (j) => `N${String(j).padStart(2, "0")}`;
+  const fmtW = (v) => (Math.abs(v) >= 0.01 || v === 0 ? v.toFixed(3) : v.toExponential(1));
+
+  function enableVoltage() {
+    VS.on = true;
+    const narrow = matchMedia("(max-width: 1100px)").matches;
+    document.querySelector(".app").style.gridTemplateRows = narrow ? "auto auto 230px" : "auto minmax(0, 1fr) 230px";
+    const cell = (id, more = "") => `<div style="position:relative;min-width:0${more}"><canvas id="${id}" style="position:absolute;inset:0"></canvas></div>`;
+    const line = ";border-left:1px solid var(--divider)";
+    $("bottom").innerHTML = `
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 180px minmax(0,2.4fr) 220px;grid-template-rows:minmax(0,1fr);height:100%">
+        ${cell("raster")}${cell("vdw", line)}${cell("volt", line)}${cell("vbars", line)}
+      </div>`;
+    $("volt").style.cursor = "crosshair";
+    $("vbars").style.cursor = "pointer";
+    corners(document);
+    $("volt").onpointermove = (e) => {
+      const gm = VS.geom;
+      if (!gm) return;
+      const t = Math.round(((local(e)[0] - gm.L0) / gm.span) * gm.T + 0.5);
+      if (t < 1 || t > S.t) { VS.hover = -1; dirty("volt"); return hideTip(); }
+      if (t !== VS.hover) { VS.hover = t; dirty("volt"); }
+      const v = gm.tr, f = (a) => a.toFixed(2);
+      const plast = (v.ltd[t] > 0 ? ` · LTD ${fmtW(v.ltd[t])} over ${S.nAct[t]} inputs` : "") + (v.ltp[t] > 0 ? ` · LTP ${fmtW(v.ltp[t])}` : "");
+      showTip(e, `${t} ms`, ` · u ${v.u[t] >= VS.rec.vSpike ? "spike" : f(v.u[t])} · ū− ${f(v.um[t])} · ū+ ${f(v.up[t])}${plast}`);
+    };
+    $("volt").onpointerleave = () => { VS.hover = -1; dirty("volt"); hideTip(); };
+    const barAt = (e) => {
+      const b = VS.bars;
+      if (!b) return -1;
+      const j = Math.floor((local(e)[0] - b.L) / b.bw);
+      return j >= 0 && j < b.N ? j : -1;
+    };
+    $("vbars").onpointermove = (e) => {
+      const j = barAt(e), r = VS.rec;
+      if (j < 0) return hideTip();
+      const home = r.uRef > 0 ? ` · ū̄ ${r.bar[j].toFixed(3)}, LTD ×${(r.aLtd[j] / r.aLtdBase).toFixed(2)}` : "";
+      showTip(e, nName(j), ` · LTP +${fmtW(r.ltp[j])} · LTD −${fmtW(r.ltd[j])}${j === VS.winner ? " · winner" : ""}${home}`);
+    };
+    $("vbars").onpointerleave = hideTip;
+    $("vbars").onclick = (e) => { const j = barAt(e); if (j >= 0) { S.pinned = S.pinned === j ? -1 : j; dirty("all"); } };
+    dirty("all");
+  }
+
+  // the probed neuron's voltage, its traces and the rule's drive at each step so far
+  function voltTrace(j) {
+    const r = VS.rec, T = S.T, n = S.nOut;
+    const rate = (tau) => (tau > 0 ? 1 - Math.exp(-1 / tau) : 1);
+    const rm = rate(r.tauMinus), rp = rate(r.tauPlus), kx = 1 - rate(r.tauX);
+    const u = new Float32Array(T + 1), um = new Float32Array(T + 1), up = new Float32Array(T + 1), ltd = new Float32Array(T + 1), ltp = new Float32Array(T + 1);
+    const inv = 1 / Math.max(1e-30, S.th[j] - r.rest), a = j < r.n ? r.aLtd[j] : r.aLtdBase;
+    let m = 0, p = 0, x = 0;
+    for (let t = 1; t <= S.t; t++) {
+      const v = S.spk[t * n + j] ? r.vSpike : (S.trace[t * n + j] - r.rest) * inv;
+      x = x * kx + S.nAct[t]; // Σ x̄ over the inputs, with this step's spikes
+      // both read the traces as of the step before
+      ltd[t] = a * Math.max(0, m - r.thMinus) * S.nAct[t];
+      ltp[t] = r.aLtp * Math.max(0, v - r.thPlus) * Math.max(0, p - r.thMinus) * x;
+      m += (v - m) * rm; p += (v - p) * rp;
+      u[t] = v; um[t] = m; up[t] = p;
+    }
+    return { u, um, up, ltd, ltp };
+  }
+
+  function drawVolt() {
+    const g = fit($("volt"));
+    if (!g || !S.meta) return;
+    const { x, w, h } = g, r = VS.rec, L0 = 70, R0 = 12, T = S.T, n = S.nOut;
+    x.font = `600 11px ${FH}`; x.textAlign = "left"; x.fillStyle = G[3];
+    if (!r) { x.fillText("VOLTAGE-BASED STDP · WAITING FOR THE FIRST TRAINING IMAGE", 10, 16); VS.geom = null; return; }
+    const j = probe(), tr = voltTrace(j);
+    const c = (v) => +v.toPrecision(3);
+    let sp = 0, sd = 0;
+    for (let t = 1; t <= S.t; t++) { sp += tr.ltp[t]; sd += tr.ltd[t]; }
+    const status = S.learn ? `SO FAR · LTP DRIVE ${fmtW(sp)} · LTD DRIVE ${fmtW(sd)}` : "TEST IMAGE · WEIGHTS FROZEN";
+    // the constants go first when the panel is too narrow for both
+    let title = `VOLTAGE-BASED STDP · ${nName(j)} · θ− ${c(r.thMinus)} · θ+ ${c(r.thPlus)} V_TH · τ− ${c(r.tauMinus)} · τ+ ${c(r.tauPlus)} · τX ${c(r.tauX)} MS`;
+    if (x.measureText(title).width + x.measureText(status).width + 30 > w - R0) title = `VOLTAGE-BASED STDP · ${nName(j)}`;
+    x.fillText(title, 10, 16);
+    x.textAlign = "right"; x.fillStyle = G[2];
+    if (x.measureText(title).width + x.measureText(status).width + 30 <= w - R0) x.fillText(status, w - R0, 16);
+    const span = w - L0 - R0, cw = span / T, X = (t) => L0 + (t - 0.5) * cw;
+    const vTop = 28, vH = Math.max(40, (h - vTop - 30) * 0.62), pTop = vTop + vH + 8, pH = h - pTop - 22;
+    const lo = -0.4, hi = 1.5, Y = (v) => vTop + vH - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * vH;
+    VS.geom = { L0, span, T, tr };
+    x.textAlign = "left"; x.fillStyle = G[3];
+    x.fillText("VOLTAGE", 10, vTop + vH / 2 + 4); x.fillText("LTP ↑", 10, pTop + pH / 4 + 4); x.fillText("LTD ↓", 10, pTop + (3 * pH) / 4 + 4);
+    // inhibited steps, shaded as in the probe trace
+    x.fillStyle = pa(0.05);
+    for (let t = 1; t <= S.t; t++) if (!S.spk[t * n + j] && S.trace[t * n + j] <= S.floor + 1) x.fillRect(X(t) - cw / 2, vTop, cw + 0.5, vH);
+    // where a pre spike would be depressed: ū− above θ−, as read at that step
+    x.fillStyle = "rgba(236,131,90,0.22)";
+    for (let t = 1; t <= S.t; t++) {
+      const m = tr.um[t - 1];
+      if (m > r.thMinus) { const y0 = Y(m), y1 = Y(r.thMinus); x.fillRect(X(t) - cw / 2, y0, cw + 0.5, y1 - y0); }
+    }
+    // rest, θ− and θ+
+    x.fillStyle = pa(0.15); x.fillRect(L0, Math.round(Y(0)), span, 1);
+    x.setLineDash([4, 4]); x.lineWidth = 1;
+    x.strokeStyle = ORANGE; x.beginPath(); x.moveTo(L0, Y(r.thMinus)); x.lineTo(w - R0, Y(r.thMinus)); x.stroke();
+    x.strokeStyle = pa(0.6); x.beginPath(); x.moveTo(L0, Y(r.thPlus)); x.lineTo(w - R0, Y(r.thPlus)); x.stroke();
+    x.setLineDash([]);
+    x.font = `600 10px ${FH}`; x.textAlign = "right";
+    x.fillStyle = ORANGE; x.fillText("θ−", L0 - 4, Y(r.thMinus) + 4);
+    x.fillStyle = G.p; x.fillText("θ+", L0 - 4, Y(r.thPlus) + 4);
+    // u, with each spike drawn up to the top; then ū+ and ū−
+    x.strokeStyle = G[3]; x.lineWidth = 1.2; x.beginPath();
+    for (let t = 1; t <= S.t; t++) {
+      const spike = S.spk[t * n + j], y = spike ? vTop : Y(tr.u[t]);
+      t === 1 ? x.moveTo(X(t), y) : x.lineTo(X(t), y);
+      if (spike) x.lineTo(X(t), Y(0));
+    }
+    x.stroke();
+    for (const [arr, color] of [[tr.up, G.p], [tr.um, ORANGE]]) {
+      x.strokeStyle = color; x.lineWidth = 1.6; x.beginPath();
+      for (let t = 1; t <= S.t; t++) (t === 1 ? x.moveTo : x.lineTo).call(x, X(t), Y(arr[t]));
+      x.stroke();
+    }
+    // plasticity: LTP up and LTD down, each on its own scale
+    const mid = pTop + pH / 2;
+    let pMax = 1e-12, dMax = 1e-12;
+    for (let t = 1; t <= S.t; t++) { pMax = Math.max(pMax, tr.ltp[t]); dMax = Math.max(dMax, tr.ltd[t]); }
+    x.fillStyle = pa(0.18); x.fillRect(L0, Math.round(mid), span, 1);
+    for (let t = 1; t <= S.t; t++) {
+      if (tr.ltp[t] > 0) { const bh = (tr.ltp[t] / pMax) * (pH / 2 - 2); x.fillStyle = G.p; x.fillRect(X(t) - Math.max(1, cw / 2), mid - bh, Math.max(2, cw), bh); }
+      if (tr.ltd[t] > 0) { const bh = (tr.ltd[t] / dMax) * (pH / 2 - 2); x.fillStyle = ORANGE; x.fillRect(X(t) - cw / 2, mid + 1, Math.max(1, cw - 0.5), bh); }
+    }
+    // step axis and the legend
+    x.font = `600 10px ${FH}`; x.textAlign = "center"; x.fillStyle = pa(0.5);
+    for (let t = 50; t < T; t += 50) x.fillText(`${t}`, X(t), h - 6);
+    x.textAlign = "right"; x.fillText("MS", w - R0, h - 6);
+    let lx = 10;
+    for (const [label, color] of [["u", G[3]], ["ū−", ORANGE], ["ū+", G.p]]) {
+      x.fillStyle = color; x.fillRect(lx, h - 10, 12, 2); x.textAlign = "left"; x.fillText(label, lx + 15, h - 6); lx += 32;
+    }
+    if (VS.hover > 0) { x.fillStyle = pa(0.45); x.fillRect(Math.round(X(VS.hover)), vTop, 1, pTop + pH - vTop); }
+  }
+
+  // the probed neuron's weight change over the last training image
+  function drawVdw() {
+    const g = fit($("vdw"));
+    if (!g || !S.meta) return;
+    const { x, w, h } = g, j = probe(), r = VS.rec, n = S.side;
+    x.font = `600 11px ${FH}`; x.textAlign = "left"; x.fillStyle = G[3];
+    x.fillText(`ΔW · ${nName(j)}`, 10, 16);
+    const size = Math.min(w - 20, h - 62), ox = (w - size) / 2, oy = 24;
+    x.strokeStyle = pa(0.2); x.lineWidth = 1; x.strokeRect(ox - 0.5, oy - 0.5, size + 1, size + 1);
+    x.font = `12px ${FH}`;
+    if (!r || j >= r.n) { x.fillStyle = pa(0.45); x.fillText("no training image yet", ox + 6, oy + 18); return; }
+    const map = new Int8Array(S.nIn);
+    for (let k = 0; k < r.inputs.length; k++) map[r.inputs[k]] = r.dw[k * r.n + j];
+    drawGrid(x, ox, oy, size, n, n, (i) => { const b = 3 * (map[i] + 128); return [DIVERGE[b], DIVERGE[b + 1], DIVERGE[b + 2]]; });
+    const moved = r.ltp[j] + r.ltd[j] > 0;
+    x.fillStyle = G[2];
+    x.fillText(VS.at === VS.images ? "this image" : "last training image", ox, oy + size + 15);
+    x.fillStyle = pa(0.55);
+    x.fillText(moved ? `±${fmtW(r.top[j])} · pale up, orange down` : "left unchanged", ox, oy + size + 30);
+  }
+
+  // what every neuron took from the last training image: the winner potentiates, the rivals
+  // that came close to firing are depressed
+  function drawVbars() {
+    const g = fit($("vbars"));
+    if (!g || !S.meta) return;
+    const { x, w, h } = g, r = VS.rec;
+    x.font = `600 11px ${FH}`; x.textAlign = "left"; x.fillStyle = G[3];
+    x.fillText(`LAST TRAINING IMAGE${VS.label >= 0 ? ` · LABEL ${VS.label}` : ""}`, 10, 16);
+    if (!r) { VS.bars = null; return; }
+    const N = r.n, L = 10, bw = (w - 20) / N, top = 28, bottom = h - 36, mid = top + (bottom - top) * 0.6;
+    let pMax = 1e-12, dMax = 1e-12;
+    for (let j = 0; j < N; j++) { pMax = Math.max(pMax, r.ltp[j]); dMax = Math.max(dMax, r.ltd[j]); }
+    VS.bars = { L, bw, N };
+    x.fillStyle = pa(0.18); x.fillRect(L, Math.round(mid), w - 20, 1);
+    const pj = probe();
+    for (let j = 0; j < N; j++) {
+      const bx = L + j * bw, ww = Math.max(1, bw - (bw > 4 ? 1 : 0));
+      const ph = (r.ltp[j] / pMax) * (mid - top - 2), dh = (r.ltd[j] / dMax) * (bottom - mid - 2);
+      x.fillStyle = j === VS.winner ? G.p : gb(0.8); x.fillRect(bx, mid - ph, ww, ph);
+      x.fillStyle = ORANGE; x.fillRect(bx, mid + 1, ww, dh);
+      if (j === pj) { x.strokeStyle = G.p; x.lineWidth = 1; x.strokeRect(bx - 1.5, top - 1.5, ww + 3, bottom - top + 3); }
+    }
+    x.font = `11px ${FH}`; x.fillStyle = G[2];
+    x.fillText(`LTP ↑ TO ${fmtW(pMax)} · LTD ↓ TO ${fmtW(dMax)}`, 10, h - 20);
+    let note = "homeostasis off · LTD fixed";
+    if (r.uRef > 0) {
+      let a = Infinity, b = 0;
+      for (let j = 0; j < N; j++) { const k = r.aLtd[j] / r.aLtdBase; a = Math.min(a, k); b = Math.max(b, k); }
+      note = `homeostasis · LTD ×${a.toFixed(2)}–${b.toFixed(2)}`;
+    }
+    x.fillStyle = pa(0.55); x.fillText(note, 10, h - 6);
+  }
+
   function bind() {
     const neuronText = (j) => `N${String(j).padStart(2, "0")} · label ${S.labels[j] === NONE ? "–" : S.labels[j]} · θ ${S.theta[j].toFixed(2)}`;
     const pin = (j) => { S.pinned = S.pinned === j ? -1 : j; dirty("all"); };
@@ -532,6 +731,7 @@
   registerView("wta", {
     layout() {
       DA.on = false; DA.rec = null; DA.tags.clear();
+      VS.on = false; VS.rec = null;
       document.querySelector(".app").style.gridTemplateRows = "";
       for (const [id, html] of Object.entries(markup)) $(id).innerHTML = html;
       bind();
@@ -544,11 +744,12 @@
       S.trace = new Float32Array((T + 1) * N); S.spk = new Uint8Array((T + 1) * N); S.inGlow = new Float32Array(S.nIn); S.outGlow = new Float32Array(N);
       S.labels = new Uint8Array(N).fill(NONE); S.theta = new Float32Array(N);
       S.ring = new Array(T * 3).fill(null); S.ringAt = 0;
-      DA.rec = null; DA.tags.clear();
+      S.nAct = new Uint16Array(T + 1);
+      DA.rec = null; DA.tags.clear(); VS.rec = null;
       dirty("all");
     },
     image() {
-      S.trace.fill(0); S.spk.fill(0); S.peak.fill(0); S.t = 0; S.winner = -1; S.result = null; S.inSpikes = 0; S.outSpikes = 0;
+      S.trace.fill(0); S.spk.fill(0); S.peak.fill(0); S.nAct.fill(0); VS.images++; S.t = 0; S.winner = -1; S.result = null; S.inSpikes = 0; S.outSpikes = 0;
       S.ring[S.ringAt] = { mark: S.label }; // boundary marker occupies one slot
       S.ringAt = (S.ringAt + 1) % S.ring.length;
       dirty("net", "trace", "decision", "classes");
@@ -573,7 +774,7 @@
         }
         S.winner = v.getInt16(o, true); o += 2;
         if (S.winner >= 0) S.lastWinner = S.winner;
-        S.inSpikes += na; S.outSpikes += nf; S.t = t;
+        S.inSpikes += na; S.outSpikes += nf; S.nAct[t] = na; S.t = t;
         S.ring[S.ringAt] = { a, f };
         S.ringAt = (S.ringAt + 1) % S.ring.length;
       }
@@ -623,6 +824,25 @@
       }
       dirty("tags", "weights");
     },
+    51(v, p) { // VOLTAGE
+      const f = (k) => v.getFloat32(p + 4 * k, true);
+      const r = { tauMinus: f(0), tauPlus: f(1), tauX: f(2), thMinus: f(3), thPlus: f(4), vSpike: f(5), aLtp: f(6), aLtdBase: f(7), uRef: f(8), rest: f(9),
+        n: v.getUint16(p + 40, true) };
+      const m = v.getUint16(p + 42, true), N = r.n;
+      for (const k of ["aLtd", "bar", "ltp", "ltd", "top"]) r[k] = new Float32Array(N);
+      let o = p + 44;
+      for (let j = 0; j < N; j++, o += 20) {
+        r.aLtd[j] = v.getFloat32(o, true); r.bar[j] = v.getFloat32(o + 4, true); r.ltp[j] = v.getFloat32(o + 8, true);
+        r.ltd[j] = v.getFloat32(o + 12, true); r.top[j] = v.getFloat32(o + 16, true);
+      }
+      r.inputs = new Uint16Array(m);
+      for (let k = 0; k < m; k++, o += 2) r.inputs[k] = v.getUint16(o, true);
+      r.dw = new Int8Array(v.buffer.slice(v.byteOffset + o, v.byteOffset + o + m * N));
+      // it follows the RESULT of the image it learned from
+      VS.rec = r; VS.at = VS.images; VS.winner = S.result ? S.result.winner : -1; VS.label = S.result ? S.label : -1;
+      if (!VS.on) enableVoltage();
+      dirty("volt", "vdw", "vbars");
+    },
     },
     stats,
     frame(all) {
@@ -640,6 +860,11 @@
         const moving = daTick();
         if (all || moving || S.dirty.has("dopa") || S.dirty.has("raster")) drawDopa();
         if (all || moving || S.dirty.has("tags") || S.dirty.has("trace")) drawTags();
+      }
+      if (VS.on) {
+        if (all || S.dirty.has("volt") || S.dirty.has("trace")) drawVolt();
+        if (all || S.dirty.has("vdw") || S.dirty.has("trace")) drawVdw();
+        if (all || S.dirty.has("vbars") || S.dirty.has("trace")) drawVbars();
       }
     },
   });

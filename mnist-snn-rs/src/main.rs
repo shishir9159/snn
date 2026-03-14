@@ -206,6 +206,25 @@ fn model_params(p: &Params) -> Vec<Param<'static>> {
             Param::num("Trial gap", d.gap as f32, "ms"),
         ]);
     }
+    if p.rule == Rule::Voltage {
+        let v = &p.voltage;
+        let homeostasis = match v.u_ref {
+            0.0 => "off".to_string(),
+            r => format!("u_ref {r} · {} ms", v.tau_bar),
+        };
+        rows.extend([
+            Param::text(
+                "θ− / θ+",
+                format!("{} / {} V_th", v.theta_minus, v.theta_plus),
+            ),
+            Param::text(
+                "τ− / τ+ / τx",
+                format!("{} / {} / {} ms", v.tau_minus, v.tau_plus, v.tau_x),
+            ),
+            Param::text("A_LTP / A_LTD", format!("{} / {}", v.a_ltp, v.a_ltd)),
+            Param::text("Homeostasis", homeostasis),
+        ]);
+    }
     rows
 }
 
@@ -400,6 +419,17 @@ mod tests {
         let rows = model_params(&o.params);
         let row = rows.iter().find(|r| r.name == "Reward after").unwrap();
         assert_eq!(row.text, "1000–1500 ms");
+        assert_eq!(model_params(&Params::default()).len() + 4, rows.len());
+    }
+
+    #[test]
+    fn the_voltage_rule_shows_its_constants() {
+        let (_, o) = parse(&["--set", "rule=voltage", "--set", "u_ref=0.05"]).unwrap();
+        let rows = model_params(&o.params);
+        let row = |name| rows.iter().find(|r| r.name == name).unwrap().text.clone();
+        assert_eq!(row("θ− / θ+"), "0.4 / 1 V_th");
+        assert_eq!(row("τ− / τ+ / τx"), "10 / 7 / 15 ms");
+        assert_eq!(row("Homeostasis"), "u_ref 0.05 · 1000 ms");
         assert_eq!(model_params(&Params::default()).len() + 4, rows.len());
     }
 
